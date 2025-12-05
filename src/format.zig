@@ -59,7 +59,7 @@ pub fn printHeader(alloc: Allocator, header: []stream.ColMetadata) ![]const u8 {
         const pad_f = padValue(alloc, col.name, PAD) catch "<err>";
         const col_f = try std.fmt.allocPrint(alloc, "{[value]s:<[width]}{[sep]s}", .{
             .value = pad_f,
-            .width = col.width,
+            .width = col.width + PAD,
             .sep = Box.VertSep});
 
         try buf.appendSlice(alloc, col_f);
@@ -104,7 +104,7 @@ pub fn printHorizSep(alloc: Allocator, header: []stream.ColMetadata, orientation
 
         // There's probably a neat way to do this without a loop
         // but tricky w/ unicode
-        for (0..header[i].width) |_| {
+        for (0..header[i].width + PAD) |_| {
             try buf.appendSlice(alloc, Box.HorizSep);
         }
 

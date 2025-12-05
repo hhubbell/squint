@@ -20,9 +20,13 @@ pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8
 
     // Rethink this when we have more commands, e.g. hashmap with
     // some callable or something else.
+    const dotc = cmd[1..];
 
-    if (std.mem.eql(u8, cmd, ".errors")) {
+    if (std.mem.eql(u8, dotc, "errors")) {
         try log.printAllErrs(writer);
+    } else if (std.mem.eql(u8, dotc, "save")) {
+        log.addErr("Save not yet implemented.");
+        return error.DotCommandError;
     } else {
         log.addErr("Invalid dot command.");
         return error.DotCommandError;
@@ -205,7 +209,8 @@ pub fn main() !void {
 
         const tm_exec = timer.lap();
 
-        const res = stream.readStream(alloc, &conn, &strm) catch |err| {
+        var res = try stream.ArrowStreamBuffer.initRows(alloc, 100_000); // prod: 1024
+        stream.readStream(&conn, &strm, &res) catch |err| {
             switch (err) {
                 error.AdbcStreamError => {
                     if (strm.get_last_error) |callable| {
@@ -216,7 +221,7 @@ pub fn main() !void {
                         }
                     }
                 },
-                error.AdbcNanoArrowError => errs.addErr("NanoArrow Library Error."),
+                error.AdbcNanoArrowError => errs.addErr(&res.err.message),
                 error.AdbcLibError => errs.addErr("ADBC Library Error."),
                 else => errs.addErr("Uncaught Error.")
             }
@@ -224,25 +229,37 @@ pub fn main() !void {
             try errs.printLastErr(&stderrw.interface);
             continue;
         };
+        
+        // This is pointless
+        //if (res.hasCapacity()) {
+        //    res.shrinkToFit(alloc);
+        //}
+
+        const tm_proc = timer.lap();
+
+        const rnd = try stream.renderStreamBuffer(alloc, &res);
 
         const tm_rend = timer.lap();
 
-        try lessPipe(alloc, res);
+        try lessPipe(alloc, rnd);
 
         // Diagnostics
         try stderrw.interface.print(
             "\nTotal Rows: {d}\n\n"
                 ++ "Prepare (ms): {d}\n"
                 ++ "Execute (ms): {d}\n"
+                ++ "Process (ms): {d}\n"
                 ++ " Render (ms): {d}\n",
             .{
                 conn.last_row_count,
                 toMs(tm_prep),
                 toMs(tm_exec),
+                toMs(tm_proc),
                 toMs(tm_rend)
             });
 
-        alloc.free(res);
+        alloc.free(rnd);
+        res.deinit(alloc);
         if (strm.release) |release| release(&strm);
         try db.releaseStatement(&conn, &stmt);
 
