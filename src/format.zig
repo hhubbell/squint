@@ -26,8 +26,83 @@ pub const Box = struct {
 };
 
 
+/// Determine the required buffer size for printing a stream result set
+pub fn calcResultBufSize(meta: []stream.ColMetadata, rows: u64) u64 {
+
+    // Determine the buffer size needed to print a single row
+    const row_buf: u64 = calcRowBufSize(meta);
+
+    // Determine the buffer size needed to print a horizontal border
+    const box_buf: u64 = calcRowBoxSize(meta);
+
+    // Determine the buffer size needed to print ansi color escape sequences
+    const clr_buf: u64 = calcColorBufSize(meta);
+
+    // Multiply by 4 for the header and box borders.
+    //  1: Top border
+    //  2: Column names
+    //  3: Header/row separator
+    //  4: Bottom border
+    // WARNING: This an approximation and needs to be solidified to use
+    // the actual characters that will be printed.
+    const outer_wrap: u64 = (
+        // 1, 3, 4
+        box_buf * 3
+        // 2
+        + row_buf);
+
+    // Multiply by rows for all rows
+    const inner_vals: u64 = row_buf * rows;
+
+    return outer_wrap + inner_vals + clr_buf;
+}
+
+/// Determine the required buffer size for printing one row without the
+/// header
+pub fn calcRowBufSize(meta: []stream.ColMetadata) u64 {
+    const sep_w: u64 = Box.VertSep.len; // For col sep box char
+    const nl_w: u64 = "\n".len;         // Newline len
+
+    var accum: u64 = sep_w; 
+
+    for (meta) |col| {
+        accum += col.bytes + PAD + sep_w;
+    }
+
+    accum += nl_w;
+
+    return accum;
+}
+
+pub fn calcRowBoxSize(meta: []stream.ColMetadata) u64 {
+    const sep_w: u64 = Box.VertSep.len; // For col sep box char
+    const nl_w: u64 = "\n".len;         // Newline len
+
+    var accum: u64 = sep_w; 
+
+    for (meta) |col| {
+        accum += ((col.width + PAD) * sep_w) + sep_w;
+    }
+
+    accum += nl_w;
+
+    return accum;
+}
+
+pub fn calcColorBufSize(meta: []stream.ColMetadata) u64 {
+    var accum: u64 = 0;
+
+    for (meta) |col| {
+        accum += @intCast(col.color_slots * (GREY.len + RESET.len));
+    }
+
+    return accum;
+}
+
+
 /// Wrap a string with padding so that it is centered as much as possible
 /// within the pad. 
+/// DEPRECATED
 pub fn padValue(alloc: Allocator, value: []const u8, padding: usize) ![]u8 {
     const full = value.len + padding;
     const lpad = @divFloor(padding, 2);
@@ -42,41 +117,46 @@ pub fn padValue(alloc: Allocator, value: []const u8, padding: usize) ![]u8 {
     return padded_value;
 }
 
-pub fn printHeader(alloc: Allocator, header: []stream.ColMetadata) ![]const u8 {
-    const top = try printHorizSep(alloc, header, .Top);
-    defer alloc.free(top);
-    const mid = try printHorizSep(alloc, header, .Middle);
-    defer alloc.free(mid);
+// Copy a string buffer to another string buffer and center the string as
+// much as possible
+pub fn padCenterValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const lpad = @divFloor(pad, 2);
+    const rpad = pad - lpad;
 
-    // This does not ensure this will be alloc-free but I think it helps?
-    var buf: std.ArrayList(u8) = try .initCapacity(alloc, top.len + mid.len + 3);
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
 
-    try buf.appendSlice(alloc, top);
-    try buf.append(alloc, '\n');
-
-    for (header, 0..) |col, i| {
-        if (i == 0) try buf.appendSlice(alloc, Box.VertSep);
-        const pad_f = padValue(alloc, col.name, PAD) catch "<err>";
-        const col_f = try std.fmt.allocPrint(alloc, "{[value]s:<[width]}{[sep]s}", .{
-            .value = pad_f,
-            .width = col.width + PAD,
-            .sep = Box.VertSep});
-
-        try buf.appendSlice(alloc, col_f);
-        alloc.free(pad_f);
-        alloc.free(col_f);
-    }
-    try buf.append(alloc, '\n');
-
-    try buf.appendSlice(alloc, mid);
-    try buf.append(alloc, '\n');
-
-    return buf.toOwnedSlice(alloc);
+    return full;
 }
 
-pub fn printHorizSep(alloc: Allocator, header: []stream.ColMetadata, orientation: HorizontalSeparator) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
+pub fn printHeader(buffer: *[]u8, header: []stream.ColMetadata) usize {
+    const box_w = calcRowBoxSize(header);
 
+    var fmtbuf = buffer.*;
+
+    var idx: usize = 0;
+    idx = printHorizSep(@constCast(&fmtbuf[idx..idx + box_w]), header, .Top);
+    idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
+
+    for (header) |col| {
+        var colbuf: []u8 = fmtbuf[idx..idx + col.width + PAD];
+        idx += padCenterValue(&colbuf, col.name);
+        idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
+    }
+
+    idx += writeBuffer(&fmtbuf, "\n", idx);
+
+    idx += printHorizSep(@constCast(&fmtbuf[idx..idx + box_w]), header, .Middle);
+
+    return idx;
+}
+
+/// Print the border horizontal separator to a buffer.
+/// Return the number of bytes written
+pub fn printHorizSep(buffer: *[]u8, header: []stream.ColMetadata, orientation: HorizontalSeparator) usize {
     var l_s: []const u8 = undefined;
     var i_s: []const u8 = undefined;
     var r_s: []const u8 = undefined;
@@ -99,22 +179,88 @@ pub fn printHorizSep(alloc: Allocator, header: []stream.ColMetadata, orientation
         }
     }
 
-    for (0..header.len) |i| {
-        if (i == 0) try buf.appendSlice(alloc, l_s);
+    var idx: usize = 0;
 
+    idx += writeBuffer(buffer, l_s, idx);
+
+    for (header, 0..) |col, i| {
         // There's probably a neat way to do this without a loop
         // but tricky w/ unicode
-        for (0..header[i].width + PAD) |_| {
-            try buf.appendSlice(alloc, Box.HorizSep);
+        for (0..col.width + PAD) |_| {
+            idx += writeBuffer(buffer, Box.HorizSep, idx);
         }
 
         if (i < header.len - 1) {
-            try buf.appendSlice(alloc, i_s);
+            idx += writeBuffer(buffer, i_s, idx);
         } else {
-            try buf.appendSlice(alloc, r_s);
+            idx += writeBuffer(buffer, r_s, idx);
         }
     }
 
-    return buf.toOwnedSlice(alloc);
+    idx += writeBuffer(buffer, "\n", idx);
+
+    return idx;
 }
 
+pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
+    const box_w = calcRowBoxSize(asb.metadata.?);
+
+    var view: h.c.ArrowArrayView = .{};
+    try stream.checkNanoArrow(h.c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
+
+    var idx: usize = printHeader(buffer, asb.metadata.?);
+
+    for (0..asb.filled) |i| {
+        const batch = asb.items[i];
+        try stream.checkNanoArrow(h.c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
+
+        for (0..asb.batch_sz[i]) |r_i| {
+            var rowbuf = buffer.*[idx..];
+            var rb_idx: usize = 0;
+
+            // Left side of table border
+            rb_idx += writeBuffer(&rowbuf, Box.VertSep, rb_idx);
+
+            for (0..@intCast(view.n_children)) |c_i| {
+                const col = view.children[c_i];
+                var byte_w = asb.metadata.?[c_i].bytes + PAD;
+                var cb_idx: usize = 0;
+
+                if (stream.isNull(col, r_i)) {
+                    // We need a slightly larger buffer for printing values with
+                    // color highlighting
+                    byte_w += GREY.len + RESET.len;
+
+                    var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
+                    cb_idx += padCenterValue(&colbuf, GREY ++ "null" ++ RESET);
+                } else {
+                    var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
+                    const val_str = stream.extractValue(colbuf, col, r_i);
+                    cb_idx += padCenterValue(&colbuf, val_str);
+                }
+
+                rb_idx += cb_idx;
+                rb_idx += writeBuffer(&rowbuf, Box.VertSep, rb_idx);
+            }
+
+            rb_idx += writeBuffer(&rowbuf, "\n", rb_idx);
+
+            idx += rb_idx;
+        }
+    }
+
+    idx += printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), asb.metadata.?, .Bottom);
+
+}
+
+
+/// Copy a value slice to buffer. Return the number of bytes written.
+fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {
+    const until = i + value.len;
+
+    @memcpy(buffer.*[i..until], value);
+
+    //std.debug.print("{s}\n", .{buffer.*});
+
+    return value.len;
+}

@@ -5,13 +5,14 @@ const format = @import("format.zig");
 
 const Allocator = std.mem.Allocator;
 
-const PAD: usize = 2; //FIXME
 
 pub const ColMetadata = struct {
     const Self = @This();
 
     name: []const u8,
     width: usize,
+    bytes: usize,
+    color_slots: usize,
     typeof: h.c.ArrowType
 };
 
@@ -23,6 +24,7 @@ pub const ArrowStreamBuffer = struct {
     err: h.c.ArrowError,
     filled: u64,
     batch_sz: []u64,
+    metadata: ?[]ColMetadata = null,
 
     pub fn initRows(alloc: Allocator, capacity: u64) !Self {
         // We assume that an ArrowArrayStream batch is 1024 rows. Based on the
@@ -56,12 +58,24 @@ pub const ArrowStreamBuffer = struct {
     pub fn deinit(self: *Self, alloc: Allocator) void {
         alloc.free(self.items);
         alloc.free(self.batch_sz);
+
+        if (self.metadata != null) alloc.free(self.metadata.?);
     }
 
     pub fn add(self: *Self, batch: h.c.ArrowArray) void {
         self.items[self.filled] = batch;
 
         self.filled += 1;
+    }
+
+    pub fn countRows(self: *Self) u64 {
+        var accum: u64 = 0;
+
+        for (0..self.filled) |i| {
+            accum += self.batch_sz[i];
+        }
+
+        return accum;
     }
 
     pub fn hasCapacity(self: *Self) bool {
@@ -87,7 +101,7 @@ fn checkAdbcStream(rcode: c_int) !void {
     }
 }
 
-fn checkNanoArrow(rcode: c_int) !void {
+pub fn checkNanoArrow(rcode: c_int) !void {
     if (rcode != h.c.NANOARROW_OK) {
         return error.AdbcNanoArrowError;
     }
@@ -109,14 +123,20 @@ fn getHeader(
 
         try checkNanoArrow(h.c.ArrowSchemaViewInit(&view, col, err));
 
-        result[i] = .{ .name = name, .width = name.len + PAD, .typeof = view.type };
+        result[i] = .{
+            .name = name,
+            .width = name.len,
+            .bytes = name.len,
+            .color_slots = 0,
+            .typeof = view.type };
     }
 
     return result;
 }
 
-fn extractValue(
-    alloc: Allocator,
+/// FIXME Cannot handle all data types
+pub fn extractValue(
+    buf: []u8,
     view: *h.c.ArrowArrayView,
     idx: usize
 ) []const u8 {
@@ -135,14 +155,14 @@ fn extractValue(
         h.c.NANOARROW_TYPE_DATE64,
         h.c.NANOARROW_TYPE_TIMESTAMP => {
             const val = h.c.ArrowArrayViewGetIntUnsafe(view, row);
-            return std.fmt.allocPrint(alloc, "{d}", .{val}) catch "<err>";
+            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
         h.c.NANOARROW_TYPE_UINT8,
         h.c.NANOARROW_TYPE_UINT16,
         h.c.NANOARROW_TYPE_UINT32,
         h.c.NANOARROW_TYPE_UINT64 => {
             const val = h.c.ArrowArrayViewGetUIntUnsafe(view, row);
-            return std.fmt.allocPrint(alloc, "{d}", .{val}) catch "<err>";
+            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
         //h.c.NANOARROW_TYPE_FLOAT,
         //h.c.NANOARROW_TYPE_DOUBLE => {
@@ -151,15 +171,15 @@ fn extractValue(
         //},
         h.c.NANOARROW_TYPE_BOOL => {
             const val = h.c.ArrowArrayViewGetIntUnsafe(view, row);
-            return std.fmt.allocPrint(alloc, "{d}", .{val}) catch "<err>";
+            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
         h.c.NANOARROW_TYPE_STRING,
         h.c.NANOARROW_TYPE_LARGE_STRING => {
             const val = h.c.ArrowArrayViewGetStringUnsafe(view, row);
             const val_len: usize = @intCast(val.size_bytes);
             const val_str: []const u8 = val.data[0..val_len];
-            //return val_str;
-            return std.fmt.allocPrint(alloc, "{s}", .{val_str}) catch "<err>";
+            return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
+            //return val_str;   
         },
         //h.c.NANOARROW_TYPE_BINARY,
         //h.c.NANOARROW_TYPE_LARGE_BINARY => {
@@ -168,18 +188,57 @@ fn extractValue(
         //    const val_str: []const u8 = val.data[0..val_len];
         //    return val_str;
         //},
-        else => return std.fmt.allocPrint(alloc, "<unknown>", .{}) catch "<err>"
+        else => return "<unknown>"
     }
 }
 
+/// Determine if an ArrowArray Slot is a null value
+pub fn isNull(col: *h.c.ArrowArrayView, idx: u64) bool {
+    const row: i64 = @intCast(idx);
+
+    return h.c.ArrowArrayViewIsNull(col, row) != 0;
+}
+
+/// FIXME Cannot handle all data types
 fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
     const row: i64 = @intCast(idx);
 
-    if (h.c.ArrowArrayViewIsNull(col, row) != 0) {
-        return 4;
+    if (isNull(col, idx)) {
+        return comptime "null".len;
     }
 
+    var buf: [64]u8 = undefined;
+
     switch(col.storage_type) {
+        h.c.NANOARROW_TYPE_INT8,
+        h.c.NANOARROW_TYPE_INT16,
+        h.c.NANOARROW_TYPE_INT32,
+        h.c.NANOARROW_TYPE_INT64,
+        h.c.NANOARROW_TYPE_DATE32,
+        h.c.NANOARROW_TYPE_DATE64,
+        h.c.NANOARROW_TYPE_TIMESTAMP => {
+            const val = h.c.ArrowArrayViewGetIntUnsafe(col, row);
+            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            return str.len;
+        },
+        h.c.NANOARROW_TYPE_UINT8,
+        h.c.NANOARROW_TYPE_UINT16,
+        h.c.NANOARROW_TYPE_UINT32,
+        h.c.NANOARROW_TYPE_UINT64 => {
+            const val = h.c.ArrowArrayViewGetUIntUnsafe(col, row);
+            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            return str.len;
+        },
+        //h.c.NANOARROW_TYPE_FLOAT,
+        //h.c.NANOARROW_TYPE_DOUBLE => {
+        //    const val = h.c.ArrowArrayViewGetDoubleUnsafe(view, row);
+        //    return std.fmt.allocPrint(alloc, "{d:.5}", .{val}) catch "<err>";
+        //},
+        h.c.NANOARROW_TYPE_BOOL => {
+            const val = h.c.ArrowArrayViewGetIntUnsafe(col, row);
+            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            return str.len;
+        },
         h.c.NANOARROW_TYPE_STRING,
         h.c.NANOARROW_TYPE_LARGE_STRING => {
             const val = h.c.ArrowArrayViewGetStringUnsafe(col, row);
@@ -187,7 +246,26 @@ fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
         },
         else => return 9    // <unknown>
     }
+}
 
+/// Basically useless at this point
+///
+/// DEPRECATED
+fn byteWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
+    //const row: i64 = @intCast(idx);
+
+    // This only makes sense if we ever color an entire column. adding
+    // the extra bytes for values in a column gets weird when some values
+    // are colorable and some not. Nulls are the example. 
+    //
+    // We'll fix it later
+    const color: usize = 0;
+
+    //if (isNull(col, row)) {
+    //    color = format.GREY.len + format.RESET.len;
+    //}
+
+    return slotWidth(col, idx) + color;
 }
 
 /// Read and format a stream into a string buffer until reaching
@@ -225,11 +303,9 @@ pub fn readStream(
     }
 }
 
-
-pub fn renderStreamBuffer(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]const u8 {
-
+/// Generate a slice of ColMetadata
+pub fn calcColumnMetadata(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
     const header = try getHeader(alloc, &buffer.schema, &buffer.err);
-    defer alloc.free(header);
 
     var view: h.c.ArrowArrayView = .{};
     try checkNanoArrow(h.c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err));
@@ -244,141 +320,12 @@ pub fn renderStreamBuffer(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]const
 
             for (0..@intCast(col.*.length)) |k| {
                 header[j].width = @max(header[j].width, slotWidth(col, k));
+                header[j].bytes = @max(header[j].bytes, byteWidth(col, k));
+                header[j].color_slots += @intFromBool(isNull(col, k));
             }
-        }
-        
-    }
-
-    const head = try format.printHeader(alloc, header);
-    var fmtbuf: std.ArrayList(u8) = try .initCapacity(alloc, head.len);
-    defer alloc.free(head);
-    defer fmtbuf.deinit(alloc);
-
-    try fmtbuf.appendSlice(alloc, head);
-
-    for (0..buffer.filled) |i| {
-        const batch = buffer.items[i];
-        try checkNanoArrow(h.c.ArrowArrayViewSetArray(&view, &batch, &buffer.err));
-
-        for (0..buffer.batch_sz[i]) |r_i| {
-            // Left side of table border
-            try fmtbuf.appendSlice(alloc, format.Box.VertSep);
-
-            for (0..@intCast(view.n_children)) |c_i| {
-                const col = view.children[c_i];
-
-                var fmt: []const u8 = undefined;
-                if (h.c.ArrowArrayViewIsNull(col, @intCast(r_i)) != 0) {
-                    fmt = try std.fmt.allocPrint(alloc,
-                        "{[color]s}{[value]s:<[width]}{[reset]s}{[sep]s}",
-                        .{
-                            .color = format.GREY,
-                            .value = " null",
-                            .width = header[c_i].width + PAD,
-                            .reset = format.RESET,
-                            .sep = format.Box.VertSep});
-                } else {
-                    const val_str = extractValue(alloc, col, r_i);
-                    defer alloc.free(val_str);
-
-                    const pad_f = format.padValue(alloc, val_str, PAD) catch "<err>";
-                    defer alloc.free(pad_f);
-
-                    fmt = try std.fmt.allocPrint(alloc,
-                        "{[value]s:<[width]}{[sep]s}",
-                        .{
-                            .value = pad_f,
-                            .width = header[c_i].width + PAD,
-                            .sep = format.Box.VertSep});
-                }
-
-                try fmtbuf.appendSlice(alloc, fmt);
-                alloc.free(fmt);
-            }
-
-            try fmtbuf.appendSlice(alloc, "\n");
         }
     }
 
-    const bot = try format.printHorizSep(alloc, header, format.HorizontalSeparator.Bottom);
-    defer alloc.free(bot);
-    try fmtbuf.appendSlice(alloc, bot);
-
-    try fmtbuf.append(alloc, '\n');
-
-    return fmtbuf.toOwnedSlice(alloc);
-
+    return header;
 }
-
-
-    //for (container, 0..) |*cnt, i| {
-    //    for (cnt.*.items) |buf| {
-    //        const buf_len: usize = @intCast(buf.length);
-
-    //        if (i == 0) {
-    //            conn.*.last_row_count += buf_len;
-    //        }
-
-    //        for (0..buf_len) |j| {
-    //            header[i].width = @max(header[i].width, slotWidth(@constCast(&buf), j) + PAD);
-    //        }
-    //    }
-    //}
-
-
-//    //    var row: usize = 0;
-//    for (batch_meta.items, 0..) |bsize, i| {
-//        for (0..bsize) |j| {
-//            for (container, 0..) |*cnt, k| {
-//                const col_buf = cnt.*.items[i];
-//
-//                if (k == 0) try buf.appendSlice(alloc, format.Box.VertSep);
-//
-//                var fmt: []const u8 = undefined;
-//                if (h.c.ArrowArrayViewIsNull(&col_buf, @intCast(j)) != 0) {
-//                    fmt = try std.fmt.allocPrint(alloc, "{[color]s}{[value]s:<[width]}{[reset]s}{[sep]s}", .{
-//                        .color = format.GREY,
-//                        .value = " null",
-//                        .width = header[k].width,
-//                        .reset = format.RESET,
-//                        .sep = format.Box.VertSep});
-//                } else {
-//                    //const val = h.c.ArrowArrayViewGetStringUnsafe(&col_buf, @intCast(j));
-//                    //const val_len: usize = @intCast(val.size_bytes);
-//                    //const val_str: []const u8 = val.data[0..val_len];
-//
-//                    const val_str = extractValue(alloc, @constCast(&col_buf), j);
-//                    defer alloc.free(val_str);
-//
-//                    const pad_f = format.padValue(alloc, val_str, PAD) catch "<err>";
-//                    defer alloc.free(pad_f);
-//
-//                    fmt = try std.fmt.allocPrint(alloc, "{[value]s:<[width]}{[sep]s}", .{
-//                        .value = pad_f,
-//                        .width = header[k].width,
-//                        .sep = format.Box.VertSep});
-//                }
-//                try buf.appendSlice(alloc, fmt);
-//                alloc.free(fmt);
-//
-//            }
-//            row += 1;
-//            try buf.append(alloc, '\n');
-//        }
-//    }
-//
-//    const bot = try format.printHorizSep(alloc, header, format.HorizontalSeparator.Bottom);
-//    defer alloc.free(bot);
-//    try buf.appendSlice(alloc, bot);
-//
-//    try buf.append(alloc, '\n');
-//
-//    return buf.toOwnedSlice(alloc);
-//
-//    // Debug
-//    //for (header, 0..) |head, i| {
-//    //    std.debug.print("{s}: {} {d} {d}\n", .{head.name, head.typeof, head.width, container[i].items.len});
-//    //}
-//}
-
 

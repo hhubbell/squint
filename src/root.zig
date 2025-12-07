@@ -33,6 +33,8 @@ pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8
     }
 }
 
+/// Provide a pager child process for outputs that are larger than the standard
+/// output window. Requires dependency `less`.
 pub fn lessPipe(alloc: Allocator, data: []const u8) !void {
     var child = std.process.Child.init(&[_][]const u8 {"less", "-FRS"}, alloc);
 
@@ -229,19 +231,43 @@ pub fn main() !void {
             try errs.printLastErr(&stderrw.interface);
             continue;
         };
-        
+
         // This is pointless
         //if (res.hasCapacity()) {
         //    res.shrinkToFit(alloc);
         //}
 
+        res.metadata = try stream.calcColumnMetadata(alloc, &res);
+        const res_b_sz = format.calcResultBufSize(res.metadata.?, res.countRows());
+
         const tm_proc = timer.lap();
 
-        const rnd = try stream.renderStreamBuffer(alloc, &res);
+        std.debug.print("Buffersize: {any} bytes\n\n", .{res_b_sz});
+
+        var prntbuf = try alloc.alloc(u8, res_b_sz);
+        defer alloc.free(prntbuf);
+
+        // Testing FBA is ~50x faster than GPA for dynamically building
+        // the output string. However, there is an issue with how we build
+        // this string that requires more memory than is actually needed.
+        //
+        // Part of this was the box drawing characters being 3 bytes wide.
+        //
+        // Currently we multiply the actual needed memory by 7 to be safe. But
+        // it only works up to a certain result size. My hunch is that this is
+        // caused by the allocPrint calls to format some of the strings while
+        // building. Can we get rid of these or use a fixed buffer?
+        //var fba = std.heap.FixedBufferAllocator.init(prntbuf);
+        //const rnd = try stream.allocPrintStreamBuffer(fba.allocator(), &res);
+        //const rnd = try stream.allocPrintStreamBuffer(alloc, &res);
+        
+        try format.printStreamBuffer(&prntbuf, &res);
+
+        //std.debug.print("{d}\n\n", .{rnd.len});
 
         const tm_rend = timer.lap();
 
-        try lessPipe(alloc, rnd);
+        try lessPipe(alloc, prntbuf);
 
         // Diagnostics
         try stderrw.interface.print(
@@ -258,7 +284,7 @@ pub fn main() !void {
                 toMs(tm_rend)
             });
 
-        alloc.free(rnd);
+        //alloc.free(rnd);
         res.deinit(alloc);
         if (strm.release) |release| release(&strm);
         try db.releaseStatement(&conn, &stmt);
