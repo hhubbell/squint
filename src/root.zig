@@ -5,6 +5,7 @@ const SIG = posix.SIG;
 const time = std.time;
 
 const h = @import("cheaders.zig");
+const cli = @import("cli.zig");
 const db = @import("db.zig");
 const errors = @import("errors.zig");
 const format = @import("format.zig");
@@ -124,10 +125,22 @@ pub fn main() !void {
     var errs: errors.ErrorSingleton = try .init(alloc, 4);
     defer errs.deinit(alloc);
 
+
+    var argp: cli.SimpleArgParser = .{};
+    defer argp.vargs.deinit(alloc);
+
+    // TODO:
+    //  What if there was like an API where you could "Parse into" a struct.
+    //  The struct would define the allowed arguments and act as the carrier
+    //  for the parsed results. Would require some type introspection to
+    //  determine allowed values at compile time, which I think is possible?
+    try argp.parse(alloc);
+
+    const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
+    const arg_uri: []const u8 = argp.vargs.get("uri") orelse "/home/harry/oil.db";
+
     //var threaded: std.Io.Threaded = .init_single_threaded;
     //const io = threaded.io();
-
-    //var stdout = std.fs.File.stdout();
 
     var stderr = std.fs.File.stderr();
     var stderrw = stderr.writer(&.{});
@@ -160,12 +173,15 @@ pub fn main() !void {
         .flags = 0};
     std.posix.sigaction(SIG.INT, &rl_act, null);
 
-    const tst_path: []const u8 = "/home/harry/oil.db";
-
     var conn: db.ConnManager = db.ConnManager.init();
-    db.connectSqlite(&conn, tst_path) catch {
-        errs.addErr(conn.lastErrMsg());
+    db.connectSqlite(&conn, arg_driver, arg_uri) catch |err| {
+        switch (err) {
+            error.InvalidDriver => errs.addErr("Unsupported driver."),
+            else => errs.addErr(conn.lastErrMsg())
+        }
+
         try errs.printLastErr(&stderrw.interface);
+        std.process.exit(1);
     };
 
     while (true) {

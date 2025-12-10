@@ -32,9 +32,17 @@ pub const ConnManager = struct {
             return "No error message provided.";
         }
     }
-
-    
 };
+
+
+/// WARNING: This currently only works for ADBC built drivers made available
+/// through the adbc driver manager interface.
+pub const AdbcDriverMap = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "postgres", "adbc_driver_postgres" },
+    .{ "sqlite",  "adbc_driver_sqlite" },
+    .{ "snowflake", "adbc_driver_snowflake" }
+});
+
 
 /// Wraps an Arrow ADBC function call in error handling
 pub fn checkAdbc(rcode: c_int) !void {
@@ -44,11 +52,14 @@ pub fn checkAdbc(rcode: c_int) !void {
 }
 
 
-pub fn connectSqlite(mgr: *ConnManager, uri: []const u8) !void {
+pub fn connectSqlite(mgr: *ConnManager, driver: []const u8, uri: []const u8) !void {
+    const adbc_drv = AdbcDriverMap.get(driver) orelse return error.InvalidDriver;
+
+    const c_drv: [*:0]const u8 = @ptrCast(adbc_drv.ptr);
     const c_uri: [*:0]const u8 = @ptrCast(uri.ptr);
 
     try checkAdbc(h.c.AdbcDatabaseNew(&mgr.db, &mgr.err));
-    try checkAdbc(h.c.AdbcDatabaseSetOption(&mgr.db, "driver", "adbc_driver_sqlite", &mgr.err));
+    try checkAdbc(h.c.AdbcDatabaseSetOption(&mgr.db, "driver", c_drv, &mgr.err));
     try checkAdbc(h.c.AdbcDatabaseSetOption(&mgr.db, "uri", c_uri, &mgr.err));
     try checkAdbc(h.c.AdbcDatabaseInit(&mgr.db, &mgr.err));
 
