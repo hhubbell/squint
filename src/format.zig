@@ -235,7 +235,7 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
                     cb_idx += padCenterValue(&colbuf, GREY ++ "null" ++ RESET);
                 } else {
                     var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
-                    const val_str = stream.extractValue(colbuf, col, r_i);
+                    const val_str = stream.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);
                     cb_idx += padCenterValue(&colbuf, val_str);
                 }
 

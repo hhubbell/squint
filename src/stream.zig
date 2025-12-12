@@ -13,7 +13,11 @@ pub const ColMetadata = struct {
     width: usize,
     bytes: usize,
     color_slots: usize,
-    typeof: h.c.ArrowType
+    typeof: h.c.ArrowType,
+    // Decimal data
+    decimal_width: ?i32,
+    decimal_precision: ?i32,
+    decimal_scale: ?i32
 };
 
 pub const ArrowStreamBuffer = struct {
@@ -123,12 +127,24 @@ fn getHeader(
 
         try checkNanoArrow(h.c.ArrowSchemaViewInit(&view, col, err));
 
+        // Store the decimal storage width if we are dealing with a DECIMAL
+        const dec_width: ?i32 = switch(view.storage_type) {
+            h.c.NANOARROW_TYPE_DECIMAL32 => 32,
+            h.c.NANOARROW_TYPE_DECIMAL64 => 64,
+            h.c.NANOARROW_TYPE_DECIMAL128 => 128,
+            h.c.NANOARROW_TYPE_DECIMAL256 => 256,
+            else => null
+        };
+
         result[i] = .{
             .name = name,
             .width = name.len,
             .bytes = name.len,
             .color_slots = 0,
-            .typeof = view.type };
+            .typeof = view.type,
+            .decimal_width = dec_width,
+            .decimal_precision = view.decimal_precision,
+            .decimal_scale = view.decimal_scale};
     }
 
     return result;
@@ -136,6 +152,7 @@ fn getHeader(
 
 /// FIXME Cannot handle all data types
 pub fn extractValue(
+    meta: *ColMetadata,
     buf: []u8,
     view: *h.c.ArrowArrayView,
     idx: usize
@@ -164,10 +181,11 @@ pub fn extractValue(
             const val = h.c.ArrowArrayViewGetUIntUnsafe(view, row);
             return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
+        // XXX: Will not work until translate-c bug fixed
         //h.c.NANOARROW_TYPE_FLOAT,
         //h.c.NANOARROW_TYPE_DOUBLE => {
         //    const val = h.c.ArrowArrayViewGetDoubleUnsafe(view, row);
-        //    return std.fmt.allocPrint(alloc, "{d:.5}", .{val}) catch "<err>";
+        //    return std.fmt.bufPrint(buf, "{d:.4}", .{val}) catch "<err>";
         //},
         h.c.NANOARROW_TYPE_BOOL => {
             const val = h.c.ArrowArrayViewGetIntUnsafe(view, row);
@@ -179,16 +197,53 @@ pub fn extractValue(
             const val_len: usize = @intCast(val.size_bytes);
             const val_str: []const u8 = val.data[0..val_len];
             return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
-            //return val_str;   
         },
-        //h.c.NANOARROW_TYPE_BINARY,
+        //h.c.NANOARROW_TYPE_BINAR,
         //h.c.NANOARROW_TYPE_LARGE_BINARY => {
         //    const val = h.c.ArrowArrayViewGetBytesUnsafe(view, row);
         //    const val_len: usize = @intCast(val.size_bytes);
         //    const val_str: []const u8 = val.data[0..val_len];
         //    return val_str;
         //},
+        h.c.NANOARROW_TYPE_DECIMAL32,
+        h.c.NANOARROW_TYPE_DECIMAL64,
+        h.c.NANOARROW_TYPE_DECIMAL128,
+        h.c.NANOARROW_TYPE_DECIMAL256 => {
+            var dec: h.c.ArrowDecimal = .{};
+            h.c.ArrowDecimalInit(&dec,
+                meta.decimal_width.?,
+                meta.decimal_precision.?,
+                meta.decimal_scale.?);
+
+            var val: h.c.ArrowBuffer = .{};
+            h.c.ArrowBufferInit(&val);
+
+            h.c.ArrowArrayViewGetDecimalUnsafe(view, row, &dec);
+
+            // FIXME:
+            //  1. Error handling
+            //  2. How many allocations does this make?
+            //try checkNanoArrow(h.c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
+            _ = h.c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
+
+            const val_len: usize = @intCast(val.size_bytes);
+            const val_str: []const u8 = val.data[0..val_len];
+            return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
+
+
+        },
         else => return "<unknown>"
+    }
+}
+
+/// Implement ArrowDecimalGetBytes in place of the NanoArrow library because
+/// tranlate-c is breaking the implementation.
+fn _tmpArrowDecimalGetBytes(decimal: *h.c.ArrowDecimal, buf: []u8) void {
+
+    if (decimal.*.n_words == 0) {
+        @memcpy(buf, decimal.*.words); // @sizeOf(i32));
+    } else {
+        @memcpy(buf, decimal.*.words); // decimal.*.n_words * @sizeOf(u64));
     }
 }
 
@@ -200,7 +255,7 @@ pub fn isNull(col: *h.c.ArrowArrayView, idx: u64) bool {
 }
 
 /// FIXME Cannot handle all data types
-fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
+fn slotWidth(meta: *ColMetadata, col: *h.c.ArrowArrayView, idx: u64) usize {
     const row: i64 = @intCast(idx);
 
     if (isNull(col, idx)) {
@@ -217,7 +272,7 @@ fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
         h.c.NANOARROW_TYPE_DATE32,
         h.c.NANOARROW_TYPE_DATE64,
         h.c.NANOARROW_TYPE_TIMESTAMP => {
-            const val = h.c.ArrowArrayViewGetIntUnsafe(col, row);
+            const val: i64 = h.c.ArrowArrayViewGetIntUnsafe(col, row);
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
             return str.len;
         },
@@ -225,23 +280,48 @@ fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
         h.c.NANOARROW_TYPE_UINT16,
         h.c.NANOARROW_TYPE_UINT32,
         h.c.NANOARROW_TYPE_UINT64 => {
-            const val = h.c.ArrowArrayViewGetUIntUnsafe(col, row);
+            const val: u64 = h.c.ArrowArrayViewGetUIntUnsafe(col, row);
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
             return str.len;
         },
+        // XXX: Will not work until translate-c bug fixed
         //h.c.NANOARROW_TYPE_FLOAT,
         //h.c.NANOARROW_TYPE_DOUBLE => {
-        //    const val = h.c.ArrowArrayViewGetDoubleUnsafe(view, row);
-        //    return std.fmt.allocPrint(alloc, "{d:.5}", .{val}) catch "<err>";
+        //    const val: f128 = h.c.ArrowArrayViewGetDoubleUnsafe(col, row);
+        //    const str = std.fmt.bufPrint(&buf, "{d:.4}", .{val}) catch "<err>";
+        //    return str.len;
         //},
         h.c.NANOARROW_TYPE_BOOL => {
-            const val = h.c.ArrowArrayViewGetIntUnsafe(col, row);
+            const val: i64 = h.c.ArrowArrayViewGetIntUnsafe(col, row);
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
             return str.len;
         },
         h.c.NANOARROW_TYPE_STRING,
         h.c.NANOARROW_TYPE_LARGE_STRING => {
             const val = h.c.ArrowArrayViewGetStringUnsafe(col, row);
+            return @intCast(val.size_bytes);
+        },
+        h.c.NANOARROW_TYPE_DECIMAL32,
+        h.c.NANOARROW_TYPE_DECIMAL64,
+        h.c.NANOARROW_TYPE_DECIMAL128,
+        h.c.NANOARROW_TYPE_DECIMAL256 => {
+            var dec: h.c.ArrowDecimal = .{};
+            h.c.ArrowDecimalInit(&dec,
+                meta.decimal_width.?,
+                meta.decimal_precision.?,
+                meta.decimal_scale.?);
+
+            var val: h.c.ArrowBuffer = .{};
+            h.c.ArrowBufferInit(&val);
+
+            h.c.ArrowArrayViewGetDecimalUnsafe(col, row, &dec);
+
+            // FIXME:
+            //  1. Error handling
+            //  2. How many allocations does this make?
+            //try checkNanoArrow(h.c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
+            _ = h.c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
+
             return @intCast(val.size_bytes);
         },
         else => return 9    // <unknown>
@@ -251,7 +331,7 @@ fn slotWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
 /// Basically useless at this point
 ///
 /// DEPRECATED
-fn byteWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
+fn byteWidth(meta: *ColMetadata, col: *h.c.ArrowArrayView, idx: u64) usize {
     //const row: i64 = @intCast(idx);
 
     // This only makes sense if we ever color an entire column. adding
@@ -265,7 +345,7 @@ fn byteWidth(col: *h.c.ArrowArrayView, idx: u64) usize {
     //    color = format.GREY.len + format.RESET.len;
     //}
 
-    return slotWidth(col, idx) + color;
+    return slotWidth(meta, col, idx) + color;
 }
 
 /// Read and format a stream into a string buffer until reaching
@@ -319,8 +399,8 @@ pub fn calcColumnMetadata(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMe
             const col = view.children[j];
 
             for (0..@intCast(col.*.length)) |k| {
-                header[j].width = @max(header[j].width, slotWidth(col, k));
-                header[j].bytes = @max(header[j].bytes, byteWidth(col, k));
+                header[j].width = @max(header[j].width, slotWidth(&header[j], col, k));
+                header[j].bytes = @max(header[j].bytes, byteWidth(&header[j], col, k));
                 header[j].color_slots += @intFromBool(isNull(col, k));
             }
         }
