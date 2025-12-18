@@ -74,6 +74,8 @@ pub fn calcRowBufSize(meta: []stream.ColMetadata) u64 {
     return accum;
 }
 
+/// Determine the required buffer size for printing one row of box drawing
+/// characters. E.g. top border, bottom border.
 pub fn calcRowBoxSize(meta: []stream.ColMetadata) u64 {
     const sep_w: u64 = Box.VertSep.len; // For col sep box char
     const nl_w: u64 = "\n".len;         // Newline len
@@ -89,6 +91,7 @@ pub fn calcRowBoxSize(meta: []stream.ColMetadata) u64 {
     return accum;
 }
 
+/// Determine the required buffer size for printing all color escape sequences
 pub fn calcColorBufSize(meta: []stream.ColMetadata) u64 {
     var accum: u64 = 0;
 
@@ -99,24 +102,6 @@ pub fn calcColorBufSize(meta: []stream.ColMetadata) u64 {
     return accum;
 }
 
-
-/// Wrap a string with padding so that it is centered as much as possible
-/// within the pad. 
-/// DEPRECATED
-pub fn padValue(alloc: Allocator, value: []const u8, padding: usize) ![]u8 {
-    const full = value.len + padding;
-    const lpad = @divFloor(padding, 2);
-    const rpad = padding - lpad;
-
-    var padded_value: []u8 = try alloc.alloc(u8, full);
-
-    @memset(padded_value[0..lpad], ' ');
-    @memcpy(padded_value[lpad..full - rpad], value);
-    @memset(padded_value[full - rpad..full], ' ');
-
-    return padded_value;
-}
-
 // Copy a string buffer to another string buffer and center the string as
 // much as possible
 pub fn padCenterValue(buffer: *[]u8, value: []const u8) usize {
@@ -124,6 +109,36 @@ pub fn padCenterValue(buffer: *[]u8, value: []const u8) usize {
     const pad = full - value.len;
     const lpad = @divFloor(pad, 2);
     const rpad = pad - lpad;
+
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
+
+    return full;
+}
+
+// Copy a string buffer to another string buffer and left-justify the string
+// as much as possible
+pub fn padLeftJustValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const lpad = 1;
+    const rpad = pad - lpad;
+
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
+
+    return full;
+}
+
+// Copy a string buffer to another string buffer and right-justify the string
+// as much as possible
+pub fn padRightJustValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const rpad = 1;
+    const lpad = pad - rpad;
 
     @memmove(buffer.*[lpad..full - rpad], value);
     @memset(buffer.*[0..lpad], ' ');
@@ -236,7 +251,11 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
                 } else {
                     var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
                     const val_str = stream.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);
-                    cb_idx += padCenterValue(&colbuf, val_str);
+                    if (stream.isNumeric(col)) {
+                        cb_idx += padRightJustValue(&colbuf, val_str);
+                    } else {
+                        cb_idx += padLeftJustValue(&colbuf, val_str);
+                    }
                 }
 
                 rb_idx += cb_idx;

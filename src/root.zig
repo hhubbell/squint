@@ -76,6 +76,8 @@ pub fn lessPipe(alloc: Allocator, data: []const u8) !void {
     _ = try child.wait();
 }
 
+/// Convert an unsigned integer representing a time delta in nanoseconds to
+/// an unsigned integer representing a time delta in milliseconds
 fn toMs(ns: u64) u64 {
     return ns / time.ns_per_ms;
 }
@@ -248,38 +250,19 @@ pub fn main() !void {
             continue;
         };
 
-        // This is pointless
-        //if (res.hasCapacity()) {
-        //    res.shrinkToFit(alloc);
-        //}
-
         res.metadata = try stream.calcColumnMetadata(alloc, &res);
         const res_b_sz = format.calcResultBufSize(res.metadata.?, res.countRows());
 
         const tm_proc = timer.lap();
 
-        std.debug.print("Buffersize: {any} bytes\n\n", .{res_b_sz});
-
         var prntbuf = try alloc.alloc(u8, res_b_sz);
         defer alloc.free(prntbuf);
 
-        // Testing FBA is ~50x faster than GPA for dynamically building
-        // the output string. However, there is an issue with how we build
-        // this string that requires more memory than is actually needed.
-        //
-        // Part of this was the box drawing characters being 3 bytes wide.
-        //
-        // Currently we multiply the actual needed memory by 7 to be safe. But
-        // it only works up to a certain result size. My hunch is that this is
-        // caused by the allocPrint calls to format some of the strings while
-        // building. Can we get rid of these or use a fixed buffer?
-        //var fba = std.heap.FixedBufferAllocator.init(prntbuf);
-        //const rnd = try stream.allocPrintStreamBuffer(fba.allocator(), &res);
-        //const rnd = try stream.allocPrintStreamBuffer(alloc, &res);
-        
+        // Write the ArrowStream result set to the allocated print buffer. By
+        // calculating the required buffer size ahead of time, instead of
+        // dynamically allocating to build the string at print time, we save
+        // a substantial amount of time rendering.
         try format.printStreamBuffer(&prntbuf, &res);
-
-        //std.debug.print("{d}\n\n", .{rnd.len});
 
         const tm_rend = timer.lap();
 
@@ -287,13 +270,15 @@ pub fn main() !void {
 
         // Diagnostics
         try stderrw.interface.print(
-            "\nTotal Rows: {d}\n\n"
+            "\nTotal Rows: {d}\n"
+                ++ "Print Buffer: {d} bytes\n\n"
                 ++ "Prepare (ms): {d}\n"
                 ++ "Execute (ms): {d}\n"
                 ++ "Process (ms): {d}\n"
                 ++ " Render (ms): {d}\n",
             .{
                 conn.last_row_count,
+                res_b_sz,
                 toMs(tm_prep),
                 toMs(tm_exec),
                 toMs(tm_proc),

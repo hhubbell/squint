@@ -163,7 +163,7 @@ pub fn extractValue(
         return "null";
     }
 
-    switch(view.storage_type) {
+    switch (view.storage_type) {
         h.c.NANOARROW_TYPE_INT8,
         h.c.NANOARROW_TYPE_INT16,
         h.c.NANOARROW_TYPE_INT32,
@@ -254,6 +254,30 @@ pub fn isNull(col: *h.c.ArrowArrayView, idx: u64) bool {
     return h.c.ArrowArrayViewIsNull(col, row) != 0;
 }
 
+/// Determine if an ArrowArray is numeric
+pub fn isNumeric(col: *h.c.ArrowArrayView) bool {
+    switch (col.storage_type) {
+        h.c.NANOARROW_TYPE_INT8,
+        h.c.NANOARROW_TYPE_INT16,
+        h.c.NANOARROW_TYPE_INT32,
+        h.c.NANOARROW_TYPE_INT64,
+        h.c.NANOARROW_TYPE_DATE32,
+        h.c.NANOARROW_TYPE_DATE64,
+        h.c.NANOARROW_TYPE_TIMESTAMP,
+        h.c.NANOARROW_TYPE_UINT8,
+        h.c.NANOARROW_TYPE_UINT16,
+        h.c.NANOARROW_TYPE_UINT32,
+        h.c.NANOARROW_TYPE_UINT64,
+        h.c.NANOARROW_TYPE_FLOAT,
+        h.c.NANOARROW_TYPE_DOUBLE,
+        h.c.NANOARROW_TYPE_DECIMAL32,
+        h.c.NANOARROW_TYPE_DECIMAL64,
+        h.c.NANOARROW_TYPE_DECIMAL128,
+        h.c.NANOARROW_TYPE_DECIMAL256 => return true,
+        else => return false
+    }
+}
+
 /// FIXME Cannot handle all data types
 fn slotWidth(meta: *ColMetadata, col: *h.c.ArrowArrayView, idx: u64) usize {
     const row: i64 = @intCast(idx);
@@ -264,7 +288,7 @@ fn slotWidth(meta: *ColMetadata, col: *h.c.ArrowArrayView, idx: u64) usize {
 
     var buf: [64]u8 = undefined;
 
-    switch(col.storage_type) {
+    switch (col.storage_type) {
         h.c.NANOARROW_TYPE_INT8,
         h.c.NANOARROW_TYPE_INT16,
         h.c.NANOARROW_TYPE_INT32,
@@ -367,7 +391,7 @@ pub fn readStream(
 
     conn.*.last_row_count = 0;
 
-    while(getNext(stream, &batch) == 0 and buffer.hasCapacity()) {
+    while (getNext(stream, &batch) == 0 and buffer.hasCapacity()) {
         if (batch.release == null) break;
 
         const batch_sz: u64 = @intCast(batch.children[0].*.length);
