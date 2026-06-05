@@ -1,6 +1,9 @@
 const std = @import("std");
-const h = @import("cheaders.zig");
+const time = std.time;
+const c = @import("c");
+
 const stream = @import("stream.zig");
+const perf = @import("perf.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -25,6 +28,12 @@ pub const Box = struct {
     pub const RBotCor: []const u8 = "\u{2518}";
 };
 
+
+/// Convert an unsigned integer representing a time delta in nanoseconds to
+/// an unsigned integer representing a time delta in milliseconds
+pub fn toMs(ns: u64) u64 {
+    return ns / time.ns_per_ms;
+}
 
 /// Determine the required buffer size for printing a stream result set
 pub fn calcResultBufSize(meta: []stream.ColMetadata, rows: u64) u64 {
@@ -220,14 +229,14 @@ pub fn printHorizSep(buffer: *[]u8, header: []stream.ColMetadata, orientation: H
 pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
     const box_w = calcRowBoxSize(asb.metadata.?);
 
-    var view: h.c.ArrowArrayView = .{};
-    try stream.checkNanoArrow(h.c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
+    var view: c.ArrowArrayView = .{};
+    try stream.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
     for (0..asb.filled) |i| {
         const batch = asb.items[i];
-        try stream.checkNanoArrow(h.c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
+        try stream.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
 
         for (0..asb.batch_sz[i]) |r_i| {
             var rowbuf = buffer.*[idx..];
@@ -272,6 +281,20 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
 
 }
 
+/// Print performance data
+pub fn printPerfData(alloc: Allocator, perfd: perf.PerfData) void {
+    _ = alloc;
+
+    var buf: [55]u8 = undefined;
+    const row = std.fmt.bufPrint(&buf, "{d} rows / {d} bytes", .{perfd.rows, perfd.bufsz}) catch "ERROR!";
+
+    const prep = toMs(perfd.prep);
+    const exec = toMs(perfd.exec);
+    const proc = toMs(perfd.proc);
+    const rend = toMs(perfd.rend);
+
+    std.debug.print("{s} | prepare: {d}ms exec: {d}ms process: {d}ms render: {d}ms\n", .{row, prep, exec, proc, rend});
+}
 
 /// Copy a value slice to buffer. Return the number of bytes written.
 fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {

@@ -1,17 +1,22 @@
-//! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const Io = std.Io;
 const posix = std.posix;
 const SIG = posix.SIG;
 const time = std.time;
 
-const h = @import("cheaders.zig");
-const cli = @import("cli.zig");
-const db = @import("db.zig");
-const errors = @import("errors.zig");
-const format = @import("format.zig");
-const stream = @import("stream.zig");
-
 const Allocator = std.mem.Allocator;
+
+pub const cli = @import("cli.zig");
+pub const db = @import("db.zig");
+pub const errors = @import("errors.zig");
+pub const format = @import("format.zig");
+pub const stream = @import("stream.zig");
+pub const perf = @import("perf.zig");
+
+// Expose required c functions
+const c = @import("c");
+pub const rlReadline = c.readline;
+pub const rlAddHistory = c.add_history;
 
 
 /// Yikes - dumpster signature
@@ -21,6 +26,8 @@ pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8
 
     // Rethink this when we have more commands, e.g. hashmap with
     // some callable or something else.
+    // Turns out this is kind of how the zig exe handles cli args
+    // so I guess it's not horrible?
     const dotc = cmd[1..];
 
     if (std.mem.eql(u8, dotc, "errors")) {
@@ -36,16 +43,16 @@ pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8
 
 /// Provide a pager child process for outputs that are larger than the standard
 /// output window. Requires dependency `less`.
-pub fn lessPipe(alloc: Allocator, data: []const u8) !void {
-    var child = std.process.Child.init(&[_][]const u8 {"less", "-FRS"}, alloc);
+pub fn lessPipe(io: Io, alloc: Allocator, data: []const u8) !void {
+    _ = alloc;
 
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
+    var child = try std.process.spawn(io, .{
+        .argv = &[2][]const u8 {"less", "-FRS"},
+        .stdin = .pipe,
+        .stdout = .inherit,
+        .stderr = .inherit});
 
-    try child.spawn();
-
-    var writer = child.stdin.?.writer(&.{});
+    var writer = child.stdin.?.writer(io, &.{});
 
     // WARNING: 
     //  When we close our pager without reading the full result set, less
@@ -55,16 +62,17 @@ pub fn lessPipe(alloc: Allocator, data: []const u8) !void {
     //  case, we are just ignoring the error and returning.
     writer.interface.writeAll(data) catch |err| {
         if (err == error.WriteFailed) {
-            child.stdin.?.close();
+            child.stdin.?.close(io);
             child.stdin = null;
-            _ = try child.wait();
+            _ = try child.wait(io);
+
             return;
         }
 
         return err;
     };
     
-    child.stdin.?.close();
+    child.stdin.?.close(io);
 
     // NOTE:
     //  Using -F results in a thread panic if the input data is too small
@@ -73,13 +81,7 @@ pub fn lessPipe(alloc: Allocator, data: []const u8) !void {
     //  it to null solves this problem.
     child.stdin = null;
 
-    _ = try child.wait();
-}
-
-/// Convert an unsigned integer representing a time delta in nanoseconds to
-/// an unsigned integer representing a time delta in milliseconds
-fn toMs(ns: u64) u64 {
-    return ns / time.ns_per_ms;
+    _ = try child.wait(io);
 }
 
 /// Set a signal handler specifically for when in readline mode to handle
@@ -89,207 +91,12 @@ fn toMs(ns: u64) u64 {
 /// According to Readline documentation, the default builtin SIGINT handler
 /// should have handled cleanup of the input so far, so we do not need to
 /// do our own housekeeping.
-fn rlSigIntHandler(sig: SIG) callconv(.c) void {
+pub fn rlSigIntHandler(sig: SIG) callconv(.c) void {
     _ = sig;
 
-    _ = h.c.rl_crlf();
-    _ = h.c.rl_on_new_line();
-    h.c.rl_replace_line("", 0);
-    h.c.rl_redisplay();
+    _ = c.rl_crlf();
+    _ = c.rl_on_new_line();
+    c.rl_replace_line("", 0);
+    c.rl_redisplay();
 }
 
-/// Get the output handle window size
-///
-/// Not actively used
-fn windowSize(handle: std.fs.File.Handle) !posix.winsize {
-    var winsize: posix.winsize = .{
-        .row = 0,
-        .col = 0,
-        .xpixel = 0,
-        .ypixel = 0};
-
-    const err = posix.system.ioctl(handle, posix.T.IOCGWINSZ, @intFromPtr(&winsize));
-
-    if (posix.errno(err) != .SUCCESS) {
-        return error.IoctlError;
-    }
-
-    return winsize;
-}
-
-/// REPL loop
-///
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    var errs: errors.ErrorSingleton = try .init(alloc, 4);
-    defer errs.deinit(alloc);
-
-
-    var argp: cli.SimpleArgParser = .{};
-    defer argp.vargs.deinit(alloc);
-
-    // TODO:
-    //  What if there was like an API where you could "Parse into" a struct.
-    //  The struct would define the allowed arguments and act as the carrier
-    //  for the parsed results. Would require some type introspection to
-    //  determine allowed values at compile time, which I think is possible?
-    try argp.parse(alloc);
-
-    const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
-    const arg_uri: []const u8 = argp.vargs.get("uri") orelse "/home/harry/oil.db";
-
-    //var threaded: std.Io.Threaded = .init_single_threaded;
-    //const io = threaded.io();
-
-    var stderr = std.fs.File.stderr();
-    var stderrw = stderr.writer(&.{});
-
-    // XXX:
-    //  I originally used this block to dynamically call lessPipe based on
-    //  the window size and result size. Now I just use `less -F`. But this
-    //  might be useful for something... someday...
-    //const winsize = windowSize(stdout.handle) catch {
-    //    errs.addErr("Ioctl winsize unknown.");
-    //    try errs.printLastErr(&stderrw.interface);
-    //};
-
-    // NOTE:
-    //  When paging results, we need to disable SIGPIPE if we quit the pager
-    //  without consuming the entire result set. This is a similar approach
-    //  used in the Postgres cli
-    const pg_act = posix.Sigaction {
-        .handler = .{ .handler = SIG.IGN },
-        .mask = std.mem.zeroes(posix.sigset_t),
-        .flags = 0};
-    std.posix.sigaction(SIG.PIPE, &pg_act, null);
-
-    // Set a signal handler for SIGINT received while in readline mode. This
-    // will capture the signal and handle it in a different way instead of
-    // exiting. Instead ctrl-d will exit the repl.
-    const rl_act = posix.Sigaction {
-        .handler = .{ .handler = rlSigIntHandler },
-        .mask = std.mem.zeroes(posix.sigset_t),
-        .flags = 0};
-    std.posix.sigaction(SIG.INT, &rl_act, null);
-
-    var conn: db.ConnManager = db.ConnManager.init();
-    db.connectSqlite(&conn, arg_driver, arg_uri) catch |err| {
-        switch (err) {
-            error.InvalidDriver => errs.addErr("Unsupported driver."),
-            else => errs.addErr(conn.lastErrMsg())
-        }
-
-        try errs.printLastErr(&stderrw.interface);
-        std.process.exit(1);
-    };
-
-    while (true) {
-        const query = h.c.readline("> ");
-        
-        // A Null value here indicates a ctrl-d keypress. Exit the main loop.
-        if (query == null) {
-            break;
-        }
-
-        // If the user entered a blank string, do not continue.
-        if (std.mem.len(query) == 0) {
-            continue;
-        }
-
-        h.c.add_history(query);
-
-        // Dot commands are meta commands for interacting with the session.
-        if (query[0] == '.') {
-            dotCommand(alloc, &errs, std.mem.span(query), &stderrw.interface) catch {
-                try errs.printLastErr(&stderrw.interface);
-            };
-
-            continue;
-        }
-
-        // Basic performance monitoring
-        var timer: time.Timer = try .start();
-
-        var stmt = db.prepareStatement(&conn, std.mem.span(query)) catch {
-            errs.addErr(conn.lastErrMsg());
-            try errs.printLastErr(&stderrw.interface);
-            continue;
-        };
-
-        const tm_prep = timer.lap();
-
-        var strm = db.executeStatement(&conn, &stmt) catch {
-            errs.addErr(conn.lastErrMsg());
-            try errs.printLastErr(&stderrw.interface);
-            continue;
-        };
-
-        const tm_exec = timer.lap();
-
-        var res = try stream.ArrowStreamBuffer.initRows(alloc, 100_000); // prod: 1024
-        stream.readStream(&conn, &strm, &res) catch |err| {
-            switch (err) {
-                error.AdbcStreamError => {
-                    if (strm.get_last_error) |callable| {
-                        const msg: [*c]const u8 = callable(&strm);
-
-                        if (msg != null) {
-                            errs.addErr(std.mem.span(msg));
-                        }
-                    }
-                },
-                error.AdbcNanoArrowError => errs.addErr(&res.err.message),
-                error.AdbcLibError => errs.addErr("ADBC Library Error."),
-                else => errs.addErr("Uncaught Error.")
-            }
-
-            try errs.printLastErr(&stderrw.interface);
-            continue;
-        };
-
-        res.metadata = try stream.calcColumnMetadata(alloc, &res);
-        const res_b_sz = format.calcResultBufSize(res.metadata.?, res.countRows());
-
-        const tm_proc = timer.lap();
-
-        var prntbuf = try alloc.alloc(u8, res_b_sz);
-        defer alloc.free(prntbuf);
-
-        // Write the ArrowStream result set to the allocated print buffer. By
-        // calculating the required buffer size ahead of time, instead of
-        // dynamically allocating to build the string at print time, we save
-        // a substantial amount of time rendering.
-        try format.printStreamBuffer(&prntbuf, &res);
-
-        const tm_rend = timer.lap();
-
-        try lessPipe(alloc, prntbuf);
-
-        // Diagnostics
-        try stderrw.interface.print(
-            "\nTotal Rows: {d}\n"
-                ++ "Print Buffer: {d} bytes\n\n"
-                ++ "Prepare (ms): {d}\n"
-                ++ "Execute (ms): {d}\n"
-                ++ "Process (ms): {d}\n"
-                ++ " Render (ms): {d}\n",
-            .{
-                conn.last_row_count,
-                res_b_sz,
-                toMs(tm_prep),
-                toMs(tm_exec),
-                toMs(tm_proc),
-                toMs(tm_rend)
-            });
-
-        //alloc.free(rnd);
-        res.deinit(alloc);
-        if (strm.release) |release| release(&strm);
-        try db.releaseStatement(&conn, &stmt);
-
-        h.c.free(query);
-    }
-}
