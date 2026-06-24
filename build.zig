@@ -41,25 +41,6 @@ pub fn build(b: *std.Build) void {
     addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/device"}), ".c", c_flg);
     addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/ipc"}), ".c", c_flg);
 
-    // arrow-adbc dependency: fmt
-    //const fmt = b.addLibrary(.{
-    //    .name = "fmt",
-    //    .linkage = .static,
-    //    .root_module = b.createModule(.{
-    //        .target = target,
-    //        .optimize = optimize,
-    //        .link_libcpp = true
-    //    })
-    //});
-    //fmt.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor/fmt/include/fmt" })));
-    //fmt.root_module.addCSourceFiles(.{
-    //    .files = &.{
-    //        b.pathJoin(&.{ adbc_path, "vendor/fmt/src/format.cc" }),
-    //        b.pathJoin(&.{ adbc_path, "vendor/fmt/src/fmt.cc" })
-    //    },
-    //    .flags = &.{ "-std=c++17" }
-    //});
-
     const adbc_path: []const u8 = "vendor/arrow-adbc/c";
     const adbc = b.addLibrary(.{
         .name = "arrow-adbc",
@@ -127,8 +108,6 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(driver_mgr);
     mod.linkLibrary(nanoarrow);
     mod.linkLibrary(adbc);
-    //mod.linkSystemLibrary("fmt", .{});
-    mod.linkSystemLibrary("sqlite3", .{});
     mod.linkSystemLibrary("readline", .{});
 
     const exe = b.addExecutable(.{
