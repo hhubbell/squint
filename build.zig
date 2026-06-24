@@ -1,43 +1,122 @@
 const std = @import("std");
+const Translator = @import("translate_c").Translator;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // NOTE:
-    //  In the future, we can use translate-c to do this translation from c to
-    //  zig all in the build step. However, there is a regression in 0.16 which
-    //  incorrectly translates unary operators (e.g. ++). This breaks translation
-    //  of some `nanoarrow` functions which have for loops which use this syntax
-    //  to increment the index.
-    //
-    //  Instead, translate-c is done as a manual step and the output is stored
-    //  as `translated.zig`. The code is manually adjusted to be valid zig
-    //  syntax
-    //
-    const Translator = @import("translate_c").Translator;
-    const translate_c = b.dependency("translate_c", .{});
+    const c_flg = &[_][]const u8{ "-std=c17" };
+    const cc_flg = &[_][]const u8{ "-std=c++17" };
 
+
+    // arrow-adbc dependency: nanoarrow
+    const nanoarrow_path: []const u8 = "vendor/arrow-nanoarrow";
+    const nanoarrow = b.addLibrary(.{
+        .name = "nanoarrow",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true
+        })
+    });
+
+    const nanoarrow_config = b.addConfigHeader(.{
+        .style = .blank,
+        .include_path = "nanoarrow/nanoarrow_config.h"
+    }, .{
+        .NANOARROW_VERSION = "0.9.0",
+        .NANOARROW_VERSION_MAJOR = "0",
+        .NANOARROW_VERSION_MINOR = "9",
+        .NANOARROW_VERSION_PATCH = "0",
+        .NANOARROW_VERSION_INT = 900,
+        .NANOARROW_NAMESPACE_DEFINE = "#define NANOARROW_NAMESPACE"
+    });
+        
+    nanoarrow.root_module.addConfigHeader(nanoarrow_config);
+    nanoarrow.root_module.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
+    nanoarrow.root_module.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "thirdparty/flatcc/include" })));
+
+    addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/common"}), ".c", c_flg);
+    addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/device"}), ".c", c_flg);
+    addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/ipc"}), ".c", c_flg);
+
+    // arrow-adbc dependency: fmt
+    //const fmt = b.addLibrary(.{
+    //    .name = "fmt",
+    //    .linkage = .static,
+    //    .root_module = b.createModule(.{
+    //        .target = target,
+    //        .optimize = optimize,
+    //        .link_libcpp = true
+    //    })
+    //});
+    //fmt.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor/fmt/include/fmt" })));
+    //fmt.root_module.addCSourceFiles(.{
+    //    .files = &.{
+    //        b.pathJoin(&.{ adbc_path, "vendor/fmt/src/format.cc" }),
+    //        b.pathJoin(&.{ adbc_path, "vendor/fmt/src/fmt.cc" })
+    //    },
+    //    .flags = &.{ "-std=c++17" }
+    //});
+
+    const adbc_path: []const u8 = "vendor/arrow-adbc/c";
+    const adbc = b.addLibrary(.{
+        .name = "arrow-adbc",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .link_libcpp = true
+        })
+    });
+
+    adbc.root_module.addIncludePath(b.path(adbc_path));
+    adbc.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
+    adbc.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include/arrow-adbc" })));
+    adbc.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor" })));
+    adbc.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor/nanoarrow" })));
+    adbc.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor/fmt/include/fmt" })));
+
+    addCSourceFileGlob(b, adbc.root_module, b.pathJoin(&.{ adbc_path, "vendor"}), ".c", c_flg);
+
+    // arrow-adbc dependency: driver_manager
+    const driver_mgr = b.addLibrary(.{
+        .name = "adbc-driver-manager",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libcpp = true
+        })
+    });
+
+    driver_mgr.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "driver_manager" })));
+    driver_mgr.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
+    driver_mgr.root_module.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor" })));
+
+    addCSourceFileGlob(b, driver_mgr.root_module, b.pathJoin(&.{ adbc_path, "driver_manager"}), ".c", c_flg);
+    driver_mgr.root_module.addCSourceFiles(.{
+        .files = &.{
+            b.pathJoin(&.{ adbc_path, "driver_manager/adbc_driver_manager_api.cc" }),
+            b.pathJoin(&.{ adbc_path, "driver_manager/adbc_driver_manager.cc" }),
+            b.pathJoin(&.{ adbc_path, "driver_manager/adbc_driver_manager_driver_loading.cc" }),
+            b.pathJoin(&.{ adbc_path, "driver_manager/adbc_driver_manager_profiles.cc" }),
+        },
+        .flags = cc_flg
+    });
+
+    const translate_c = b.dependency("translate_c", .{});
     const t: Translator = .init(translate_c, .{
         .c_source_file = b.path("include/c.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true
     });
-    //const translate_c = b.addModule("c", .{
-    //    .root_source_file = b.path("include/translated.zig"),
-    //    .target = target,
-    //    .link_libc = true,
-    //    .link_libcpp = true,
-    //});
-    t.mod.linkSystemLibrary("fmt", .{});
-    t.mod.linkSystemLibrary("nanoarrow_shared", .{});
-    t.mod.linkSystemLibrary("adbc_driver_manager", .{});
-    t.mod.linkSystemLibrary("adbc_driver_sqlite", .{});
-    t.mod.linkSystemLibrary("sqlite3", .{});
-    t.mod.linkSystemLibrary("readline", .{});
-
-
+    t.mod.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
+    t.mod.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor" })));
+    
     const mod = b.addModule("sql_cli", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -45,8 +124,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "c", .module = t.mod }
         }
     });
+    mod.linkLibrary(driver_mgr);
+    mod.linkLibrary(nanoarrow);
+    mod.linkLibrary(adbc);
+    //mod.linkSystemLibrary("fmt", .{});
+    mod.linkSystemLibrary("sqlite3", .{});
+    mod.linkSystemLibrary("readline", .{});
 
-    
     const exe = b.addExecutable(.{
         .name = "sql_cli",
         .root_module = b.createModule(.{
@@ -69,9 +153,7 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -88,4 +170,31 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+}
+
+fn addCSourceFileGlob(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    path: []const u8,
+    ext: [] const u8,
+    options: []const []const u8
+) void {
+
+    var dir = std.Io.Dir.cwd().openDir(b.graph.io, path, .{ .iterate = true }) catch {
+        std.debug.print("Failed to open C source directory: {s}\n", .{path});
+        return;
+    };
+    defer dir.close(b.graph.io);
+
+    var walker = dir.walk(b.allocator) catch return;
+    defer walker.deinit();
+
+    while (walker.next(b.graph.io) catch null) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.path, ext)) {
+            mod.addCSourceFile(.{
+                .file = b.path(b.pathJoin(&.{path, entry.path})),
+                .flags = options
+            });
+        }
+    }
 }

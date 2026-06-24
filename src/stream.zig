@@ -40,9 +40,9 @@ pub const ArrowStreamBuffer = struct {
         const batch_sz_mon: []u64 = try alloc.alloc(u64, max_batches);
 
         return .{
-            .schema = .{},
+            .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
             .items = batch_buffer,
-            .err = .{},
+            .err = std.mem.zeroInit(c.ArrowError, .{}),
             .filled = 0,
             .batch_sz = batch_sz_mon};
     }
@@ -52,9 +52,9 @@ pub const ArrowStreamBuffer = struct {
         const batch_sz_mon: []u64 = try alloc.alloc(u64, capacity);
 
         return .{
-            .schema = .{},
+            .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
             .items = batch_buffer,
-            .err = .{},
+            .err = std.mem.zeroInit(c.ArrowError, .{}),
             .filled = 0,
             .batch_sz = batch_sz_mon};
     }
@@ -119,7 +119,7 @@ fn getHeader(
     const n: usize = @intCast(schema.n_children);
 
     var result: []ColMetadata = try alloc.alloc(ColMetadata, n);
-    var view: c.ArrowSchemaView = .{};
+    var view: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
 
     for (0..n) |i| {
         const col: *c.ArrowSchema = schema.children[i];
@@ -181,12 +181,11 @@ pub fn extractValue(
             const val = c.ArrowArrayViewGetUIntUnsafe(view, row);
             return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
-        // XXX: Will not work until translate-c bug fixed
-        //c.NANOARROW_TYPE_FLOAT,
-        //c.NANOARROW_TYPE_DOUBLE => {
-        //    const val = c.ArrowArrayViewGetDoubleUnsafe(view, row);
-        //    return std.fmt.bufPrint(buf, "{d:.4}", .{val}) catch "<err>";
-        //},
+        c.NANOARROW_TYPE_FLOAT,
+        c.NANOARROW_TYPE_DOUBLE => {
+            const val = c.ArrowArrayViewGetDoubleUnsafe(view, row);
+            return std.fmt.bufPrint(buf, "{d:.4}", .{val}) catch "<err>";
+        },
         c.NANOARROW_TYPE_BOOL => {
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
             return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
@@ -209,13 +208,13 @@ pub fn extractValue(
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
         c.NANOARROW_TYPE_DECIMAL256 => {
-            var dec: c.ArrowDecimal = .{};
+            var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
                 meta.decimal_width.?,
                 meta.decimal_precision.?,
                 meta.decimal_scale.?);
 
-            var val: c.ArrowBuffer = .{};
+            var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});
             c.ArrowBufferInit(&val);
 
             c.ArrowArrayViewGetDecimalUnsafe(view, row, &dec);
@@ -329,13 +328,13 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
         c.NANOARROW_TYPE_DECIMAL256 => {
-            var dec: c.ArrowDecimal = .{};
+            var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
                 meta.decimal_width.?,
                 meta.decimal_precision.?,
                 meta.decimal_scale.?);
 
-            var val: c.ArrowBuffer = .{};
+            var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});
             c.ArrowBufferInit(&val);
 
             c.ArrowArrayViewGetDecimalUnsafe(col, row, &dec);
@@ -386,7 +385,7 @@ pub fn readStream(
     try checkAdbcStream(getSchema(stream, &buffer.schema));
     //defer { if (&buffer.schema.release) |release| release(&buffer.schema); }
 
-    var batch: c.ArrowArray = .{};
+    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
     //defer { if (batch.release) |release| release(&batch); }
 
     conn.*.last_row_count = 0;
@@ -411,7 +410,7 @@ pub fn readStream(
 pub fn calcColumnMetadata(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
     const header = try getHeader(alloc, &buffer.schema, &buffer.err);
 
-    var view: c.ArrowArrayView = .{};
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
     try checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err));
 
     for (0..buffer.filled) |i| {

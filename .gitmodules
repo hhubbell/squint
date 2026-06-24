@@ -1,0 +1,6 @@
+[submodule "vendor/arrow-adbc"]
+	path = vendor/arrow-adbc
+	url = https://github.com/apache/arrow-adbc.git
+[submodule "vendor/arrow-nanoarrow"]
+	path = vendor/arrow-nanoarrow
+	url = https://github.com/apache/arrow-nanoarrow.git

@@ -13,9 +13,9 @@ pub const ConnManager = struct {
 
     pub fn init() Self {
         return .{
-            .db = .{},
-            .conn = .{},
-            .err = .{},
+            .db = std.mem.zeroInit(c.AdbcDatabase, .{}),
+            .conn = std.mem.zeroInit(c.AdbcConnection, .{}),
+            .err = std.mem.zeroInit(c.AdbcError, .{}),
             .last_row_count = 0
         };
     }
@@ -70,7 +70,7 @@ pub fn connectSqlite(mgr: *ConnManager, driver: []const u8, uri: []const u8) !vo
 pub fn prepareStatement(mgr: *ConnManager, query: []const u8) !c.AdbcStatement {
     const c_query: [*:0]const u8 = @ptrCast(query.ptr);
 
-    var stmt: c.AdbcStatement = .{};
+    var stmt: c.AdbcStatement = std.mem.zeroInit(c.AdbcStatement, .{});
 
     try checkAdbc(c.AdbcStatementNew(&mgr.conn, &stmt, &mgr.err));
 
@@ -82,7 +82,7 @@ pub fn prepareStatement(mgr: *ConnManager, query: []const u8) !c.AdbcStatement {
 }
 
 pub fn executeStatement(mgr: *ConnManager, stmt: *c.AdbcStatement) !c.ArrowArrayStream {
-    var stream: c.ArrowArrayStream = .{};
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
     try checkAdbc(c.AdbcStatementExecuteQuery(stmt, &stream, null, &mgr.err));
 

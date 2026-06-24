@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .translate_c = .{
-            .url = "git+https://codeberg.org/ziglang/translate-c#2802d5ecd54daa6da0e01b5eb1c890e17a923000",
-            .hash = "translate_c-0.0.0-Q_BUWjr2BgDepbA-CuV1XXo9IvB7MGaL5AzHru_fzuLk",
+            .url = "git+https://codeberg.org/ziglang/translate-c#1b33d1d273f7035a16c45457efdf2afda7cf0925",
+            .hash = "translate_c-0.0.0-Q_BUWrI7BwCBn0jcYDTs1UP047kxSYoFpV6vD6Vuy9Vo",
         },
     },
     .paths = .{

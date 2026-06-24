@@ -229,7 +229,7 @@ pub fn printHorizSep(buffer: *[]u8, header: []stream.ColMetadata, orientation: H
 pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
     const box_w = calcRowBoxSize(asb.metadata.?);
 
-    var view: c.ArrowArrayView = .{};
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
     try stream.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
