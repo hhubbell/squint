@@ -307,13 +307,12 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
             return str.len;
         },
-        // XXX: Will not work until translate-c bug fixed
-        //c.NANOARROW_TYPE_FLOAT,
-        //c.NANOARROW_TYPE_DOUBLE => {
-        //    const val: f128 = c.ArrowArrayViewGetDoubleUnsafe(col, row);
-        //    const str = std.fmt.bufPrint(&buf, "{d:.4}", .{val}) catch "<err>";
-        //    return str.len;
-        //},
+        c.NANOARROW_TYPE_FLOAT,
+        c.NANOARROW_TYPE_DOUBLE => {
+            const val: f128 = c.ArrowArrayViewGetDoubleUnsafe(col, row);
+            const str = std.fmt.bufPrint(&buf, "{d:.4}", .{val}) catch "<err>";
+            return str.len;
+        },
         c.NANOARROW_TYPE_BOOL => {
             const val: i64 = c.ArrowArrayViewGetIntUnsafe(col, row);
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";

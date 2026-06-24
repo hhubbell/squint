@@ -29,10 +29,34 @@ pub const Box = struct {
 };
 
 
-/// Convert an unsigned integer representing a time delta in nanoseconds to
-/// an unsigned integer representing a time delta in milliseconds
-pub fn toMs(ns: u64) u64 {
-    return ns / time.ns_per_ms;
+/// Convert an unsigned integer representing a time delta in milliseconds to
+/// a character buffer which is at most 5 characters. Therefore, we have a
+/// small amount of room to deal with to render the display. For example, a
+/// performance point which takes 2500 milliseconds could be simplified to
+/// something like 2.5s
+pub fn toDisplayTime(ms: u64, buf: *[5]u8) void {
+
+    if (ms < 1000) {
+        _ = std.fmt.bufPrint(buf, "{d}ms", .{ms}) catch @memcpy(buf, "ERR!!");
+        return;
+    }
+
+    if (ms < 10000) {
+        const f_ms: f32 = @floatFromInt(ms);
+        const sec: f32 = f_ms / 1000.0;
+        _ = std.fmt.bufPrint(buf, "{d:.1}s", .{sec}) catch @memcpy(buf, "ERR!!");
+        return;
+    }
+
+    if (ms < 60000) {
+        const f_ms: f32 = @floatFromInt(ms);
+        const sec: f32 = f_ms / 1000.0;
+
+        _ = std.fmt.bufPrint(buf, "{d:.0}s", .{sec}) catch @memcpy(buf, "ERR!!");
+        return;
+    }
+
+    @memcpy(buf, "LONG!");
 }
 
 /// Determine the required buffer size for printing a stream result set
@@ -288,12 +312,18 @@ pub fn printPerfData(alloc: Allocator, perfd: perf.PerfData) void {
     var buf: [55]u8 = undefined;
     const row = std.fmt.bufPrint(&buf, "{d} rows / {d} bytes", .{perfd.rows, perfd.bufsz}) catch "ERROR!";
 
-    const prep = toMs(perfd.prep);
-    const exec = toMs(perfd.exec);
-    const proc = toMs(perfd.proc);
-    const rend = toMs(perfd.rend);
+    var prep: [5]u8 = undefined;
+    var exec: [5]u8 = undefined;
+    var proc: [5]u8 = undefined;
+    var rend: [5]u8 = undefined;
 
-    std.debug.print("{s} | prepare: {d}ms exec: {d}ms process: {d}ms render: {d}ms\n", .{row, prep, exec, proc, rend});
+    toDisplayTime(perfd.prep, &prep);
+    toDisplayTime(perfd.exec, &exec);
+    toDisplayTime(perfd.proc, &proc);
+    toDisplayTime(perfd.rend, &rend);
+
+    std.debug.print("{s} | prep: {s} exec: {s} proc: {s} rend: {s}\n", .{
+        row, prep, exec, proc, rend});
 }
 
 /// Copy a value slice to buffer. Return the number of bytes written.

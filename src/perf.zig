@@ -23,6 +23,7 @@ pub const PerfData = struct {
 
         self.last_lap = l;
 
+
         // FIXME: If last_lap is ever AFTER current lap, this will crash. It
         // should never happen, but we're depending on the language to handle
         // this instead of being more defensive.
