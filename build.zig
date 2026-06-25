@@ -95,8 +95,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true
     });
-    t.mod.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
-    t.mod.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "vendor" })));
+    t.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
+    t.addConfigHeader(nanoarrow_config);
+    t.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
     
     const mod = b.addModule("sql_cli", .{
         .root_source_file = b.path("src/root.zig"),
