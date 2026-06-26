@@ -150,7 +150,7 @@ fn getHeader(
     return result;
 }
 
-/// FIXME Cannot handle all data types
+
 pub fn extractValue(
     meta: *ColMetadata,
     buf: []u8,
@@ -197,13 +197,13 @@ pub fn extractValue(
             const val_str: []const u8 = val.data[0..val_len];
             return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
         },
-        //c.NANOARROW_TYPE_BINAR,
-        //c.NANOARROW_TYPE_LARGE_BINARY => {
-        //    const val = c.ArrowArrayViewGetBytesUnsafe(view, row);
-        //    const val_len: usize = @intCast(val.size_bytes);
-        //    const val_str: []const u8 = val.data[0..val_len];
-        //    return val_str;
-        //},
+        c.NANOARROW_TYPE_BINARY,
+        c.NANOARROW_TYPE_LARGE_BINARY => {
+            const val = c.ArrowArrayViewGetBytesUnsafe(view, row);
+            const val_len: usize = @intCast(val.size_bytes);
+            const val_str: []const u8 = val.data.as_char[0..val_len];
+            return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
+        },
         c.NANOARROW_TYPE_DECIMAL32,
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
@@ -321,6 +321,11 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_STRING,
         c.NANOARROW_TYPE_LARGE_STRING => {
             const val = c.ArrowArrayViewGetStringUnsafe(col, row);
+            return @intCast(val.size_bytes);
+        },
+        c.NANOARROW_TYPE_BINARY,
+        c.NANOARROW_TYPE_LARGE_BINARY => {
+            const val = c.ArrowArrayViewGetBytesUnsafe(col, row);
             return @intCast(val.size_bytes);
         },
         c.NANOARROW_TYPE_DECIMAL32,
