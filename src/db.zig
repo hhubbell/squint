@@ -37,10 +37,14 @@ pub const ConnManager = struct {
 
 /// WARNING: This currently only works for ADBC built drivers made available
 /// through the adbc driver manager interface.
+/// FIXME: No longer necessary that we use a newer adbc spec, which defines
+/// a directory structure and toml config entry point. We can refer to drivers
+/// by name instead of by their static library
 pub const AdbcDriverMap = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "postgres", "adbc_driver_postgres" },
-    .{ "sqlite",  "adbc_driver_sqlite" },
-    .{ "snowflake", "adbc_driver_snowflake" }
+    .{ "duckdb", "duckdb" },
+    .{ "postgres", "postgres" },
+    .{ "sqlite",  "sqlite" },
+    .{ "snowflake", "snowflake" }
 });
 
 
@@ -58,9 +62,16 @@ pub fn connectSqlite(mgr: *ConnManager, driver: []const u8, uri: []const u8) !vo
     const c_drv: [*:0]const u8 = @ptrCast(adbc_drv.ptr);
     const c_uri: [*:0]const u8 = @ptrCast(uri.ptr);
 
+    // XXX:
+    // The duckdb docs say use "path" but URI also works. Presumably URI could
+    // add additional things but IDK what that would be
+    // const c_psc: [*:0]const u8 = if (std.mem.eql(u8, adbc_drv, "duckdb")) "path" else "uri";
+    const c_psc: [*:0]const u8 = "uri"; 
+
     try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
+    try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
     try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", c_drv, &mgr.err));
-    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "uri", c_uri, &mgr.err));
+    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, c_psc, c_uri, &mgr.err));
     try checkAdbc(c.AdbcDatabaseInit(&mgr.db, &mgr.err));
 
     try checkAdbc(c.AdbcConnectionNew(&mgr.conn, &mgr.err));

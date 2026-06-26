@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true
     });
     t.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include" })));
+    t.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include/arrow-adbc" })));
     t.addConfigHeader(nanoarrow_config);
     t.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
     
