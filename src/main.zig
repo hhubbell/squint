@@ -161,7 +161,7 @@ pub fn main(init: std.process.Init) !void {
 
         perf.load = perf.lap(io);
 
-        res.metadata = try root.stream.calcColumnMetadata(gpa, &res);
+        res.metadata = try root.stream.calcColumnMetadata(io, gpa, &res);
         perf.rows = res.countRows();
         perf.bufsz = root.format.calcResultBufSize(res.metadata.?, perf.rows);
 

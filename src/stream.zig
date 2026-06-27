@@ -4,6 +4,7 @@ const db = @import("db.zig");
 const format = @import("format.zig");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 
 pub const ColMetadata = struct {
@@ -19,6 +20,7 @@ pub const ColMetadata = struct {
     decimal_precision: ?i32,
     decimal_scale: ?i32
 };
+
 
 pub const ArrowStreamBuffer = struct {
     const Self = @This();
@@ -407,28 +409,121 @@ pub fn readStream(
 }
 
 /// Generate a slice of ColMetadata
-pub fn calcColumnMetadata(alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
+pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
     const header = try getHeader(alloc, &buffer.schema, &buffer.err);
 
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    try checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err));
+    //const cols: usize = header.len;
+    const chunks: usize = header.len * buffer.filled;
+
+    const q_buf = try alloc.alloc(ColFmt, chunks);
+    defer alloc.free(q_buf);
+
+    var queue: Io.Queue(ColFmt) = .init(q_buf);
+
+    var consumer = try io.concurrent(consumeResult, .{
+        io, &queue, chunks, header
+    });
+    defer _ = consumer.cancel(io) catch {};
+
+    var grp: Io.Group = .init;
+    defer grp.cancel(io);
 
     for (0..buffer.filled) |i| {
-        const batch = buffer.items[i];
-        try checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err));
 
-        // Each child of the buffer is a column array
-        for (0..@intCast(view.n_children)) |j| {
-            const col = view.children[j];
-
-            for (0..@intCast(col.*.length)) |k| {
-                header[j].width = @max(header[j].width, slotWidth(&header[j], col, k));
-                header[j].bytes = @max(header[j].bytes, byteWidth(&header[j], col, k));
-                header[j].color_slots += @intFromBool(isNull(col, k));
-            }
-        }
+        grp.concurrent(io, produceBatchMaximums, .{
+            io, &queue, i, buffer, header
+        }) catch |e| {
+            _ = try consumer.cancel(io);
+            return e;
+        };
     }
+
+    try consumer.await(io);
+    try grp.await(io);
+
+    //for (0..buffer.filled) |i| {
+    //    for (0..cols) |j| {
+    //        std.debug.print("{d} {d} {d} {d}\n", .{result.len, i, j, cols});
+    //        std.debug.print("{d} {d} {d}\n", .{
+    //            result[0], 0, 0});
+    //            //result[i * cols + j].bytes,
+    //            //result[i * cols + j].color_slots});
+
+    //        //header[j].width = @max(header[j].width, result[i * cols + j].width);
+    //        //header[j].bytes = @max(header[j].bytes, result[i * cols + j].bytes);
+    //        //header[j].color_slots += result[i * cols + j].color_slots;
+    //    }
+    //}
 
     return header;
 }
 
+const ColFmt = struct {
+    width: usize,
+    bytes: usize,
+    color_slots: usize,
+    col_i: usize
+};
+
+fn consumeResult(
+    io: Io,
+    queue: *Io.Queue(ColFmt),
+    count: usize,
+    header: []ColMetadata
+) !void {
+    for (0..count) |_| {
+        const res = try queue.getOne(io);
+        const j = res.col_i;
+
+        //std.debug.print("{d}, {d}, {d}\n", .{header.len, count, j});
+
+        header[j].width = @max(header[j].width, res.width);
+        header[j].bytes = @max(header[j].bytes, res.bytes);
+        header[j].color_slots += res.color_slots;
+    }
+}
+
+pub fn produceBatchMaximums(
+    io: Io,
+    queue: *Io.Queue(ColFmt),
+    index: usize,
+    buffer: *ArrowStreamBuffer,
+    //FIXME:
+    header: []ColMetadata
+) !void {
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+    checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err)) catch {
+        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+        std.debug.print("Process likely deadlocked\n", .{});
+        return error.Canceled;
+    };
+
+    var batch: c.ArrowArray = buffer.items[index];
+
+    checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
+        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+        std.debug.print("Process likely deadlocked\n", .{});
+        return error.Canceled;
+    };
+
+    // Each child of the buffer is a column array
+    for (0..@intCast(view.n_children)) |j| {
+        const col = view.children[j];
+
+        var c_fmt: ColFmt = .{
+            .width = 0,
+            .bytes = 0,
+            .color_slots = 0,
+            .col_i = j};
+
+        for (0..@intCast(col.*.length)) |k| {
+            c_fmt.width = @max(c_fmt.width, slotWidth(&header[j], col, k));
+            c_fmt.bytes = @max(c_fmt.bytes, byteWidth(&header[j], col, k));
+            c_fmt.color_slots += @intFromBool(isNull(col, k));
+        }
+
+        queue.putOne(io, c_fmt) catch {
+            return error.Canceled;
+        };
+    }
+}
