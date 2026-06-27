@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
 
     const io = threaded.io();
 
-    var errs: root.errors.ErrorSingleton = try .init(gpa, 4);
+    var errs: root.errors.ErrorSingleton = try .init(gpa, 16);
     defer errs.deinit(gpa);
 
     var argp: root.cli.SimpleArgParser = .{};
@@ -51,7 +51,7 @@ pub fn main(init: std.process.Init) !void {
     try argp.parse(gpa, init.minimal.args);
 
     const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
-    const arg_uri: []const u8 = argp.vargs.get("uri") orelse "/home/harry/oil.db";
+    const arg_uri: []const u8 = argp.vargs.get("uri") orelse ":memory:";
 
     var stderr = Io.File.stderr();
     var stderrw = stderr.writer(io, &.{});
@@ -64,10 +64,9 @@ pub fn main(init: std.process.Init) !void {
     };
     _ = winsize;
 
-    // NOTE:
-    //  When paging results, we need to disable SIGPIPE if we quit the pager
-    //  without consuming the entire result set. This is a similar approach
-    //  used in the Postgres cli
+    // When paging results, we need to disable SIGPIPE if we quit the pager
+    // without consuming the entire result set. This is a similar approach
+    // used in the Postgres cli
     const pg_act = posix.Sigaction {
         .handler = .{ .handler = SIG.IGN },
         .mask = std.mem.zeroes(posix.sigset_t),
@@ -137,8 +136,9 @@ pub fn main(init: std.process.Init) !void {
 
         perf.exec = perf.lap(io);
 
-        var res = try root.stream.ArrowStreamBuffer.initRows(gpa, 100_000); // prod: 1024
-        root.stream.readStream(&conn, &strm, &res) catch |err| {
+        //var res = try root.stream.ArrowStreamBuffer.initRows(gpa, 100_000); // prod: 1024
+        var res = try root.stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+        root.stream.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
                 error.AdbcStreamError => {
                     if (strm.get_last_error) |callable| {
@@ -159,10 +159,12 @@ pub fn main(init: std.process.Init) !void {
         };
         defer res.deinit(gpa);
 
-        res.metadata = try root.stream.calcColumnMetadata(gpa, &res);
-        perf.bufsz = root.format.calcResultBufSize(res.metadata.?, res.countRows());
+        perf.load = perf.lap(io);
 
-        perf.rows = conn.last_row_count;
+        res.metadata = try root.stream.calcColumnMetadata(gpa, &res);
+        perf.rows = res.countRows();
+        perf.bufsz = root.format.calcResultBufSize(res.metadata.?, perf.rows);
+
         perf.proc = perf.lap(io);
 
         var prntbuf = try gpa.alloc(u8, perf.bufsz);

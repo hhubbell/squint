@@ -262,7 +262,7 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
         const batch = asb.items[i];
         try stream.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
 
-        for (0..asb.batch_sz[i]) |r_i| {
+        for (0..asb.countBatchRows(i)) |r_i| {
             var rowbuf = buffer.*[idx..];
             var rb_idx: usize = 0;
 
@@ -314,16 +314,18 @@ pub fn printPerfData(alloc: Allocator, perfd: perf.PerfData) void {
 
     var prep: [5]u8 = undefined;
     var exec: [5]u8 = undefined;
+    var load: [5]u8 = undefined;
     var proc: [5]u8 = undefined;
     var rend: [5]u8 = undefined;
 
     toDisplayTime(perfd.prep, &prep);
     toDisplayTime(perfd.exec, &exec);
+    toDisplayTime(perfd.load, &load);
     toDisplayTime(perfd.proc, &proc);
     toDisplayTime(perfd.rend, &rend);
 
-    std.debug.print("{s} | prep: {s} exec: {s} proc: {s} rend: {s}\n", .{
-        row, prep, exec, proc, rend});
+    std.debug.print("{s} | prep: {s} exec: {s} load: {s} proc: {s} rend: {s}\n", .{
+        row, prep, exec, load, proc, rend});
 }
 
 /// Copy a value slice to buffer. Return the number of bytes written.

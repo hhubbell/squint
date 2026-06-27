@@ -9,6 +9,7 @@ pub const PerfData = struct {
     bufsz: u64 = 0,
     prep: u64 = 0,
     exec: u64 = 0,
+    load: u64 = 0,
     proc: u64 = 0,
     rend: u64 = 0,
 

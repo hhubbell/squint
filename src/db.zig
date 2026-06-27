@@ -9,14 +9,12 @@ pub const ConnManager = struct {
     db: c.AdbcDatabase,
     conn: c.AdbcConnection,
     err: c.AdbcError,
-    last_row_count: u64,
 
     pub fn init() Self {
         return .{
             .db = std.mem.zeroInit(c.AdbcDatabase, .{}),
             .conn = std.mem.zeroInit(c.AdbcConnection, .{}),
             .err = std.mem.zeroInit(c.AdbcError, .{}),
-            .last_row_count = 0
         };
     }
 

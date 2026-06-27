@@ -22,46 +22,50 @@ pub const ColMetadata = struct {
 
 pub const ArrowStreamBuffer = struct {
     const Self = @This();
+    const buf_growth: usize = 64;
 
     schema: c.ArrowSchema,
     items: []c.ArrowArray,
     err: c.ArrowError,
     filled: u64,
-    batch_sz: []u64,
     metadata: ?[]ColMetadata = null,
 
+    /// Initialize an ArrowStreamBuffer container based on a row count ceiling
+    /// capacity. This buffer will be resized if the stream yields more than
+    /// the initialized buffers can hold.
+    /// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. Given
+    /// an initial capacity row value, the number of buffers initialized is the
+    /// ceiling of that value divided by 1024.
     pub fn initRows(alloc: Allocator, capacity: u64) !Self {
         // We assume that an ArrowArrayStream batch is 1024 rows. Based on the
         // number of rows we wish to consume (`until`), calculate the max number
         // of batches we could consume and allocate a buffer for the ArrowArrays.
         const assumed_batch: u64 = 1024;
         const max_batches: u64 = try std.math.divCeil(u64, capacity, assumed_batch);
-        const batch_buffer: []c.ArrowArray = try alloc.alloc(c.ArrowArray, max_batches);
-        const batch_sz_mon: []u64 = try alloc.alloc(u64, max_batches);
+        const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, max_batches);
 
         return .{
             .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-            .items = batch_buffer,
+            .items = batch_buf,
             .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0,
-            .batch_sz = batch_sz_mon};
+            .filled = 0};
     }
 
+    /// Initialize an ArrowStreamBuffer container using a set number of buffers.
+    /// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. This
+    /// initializer is slightly more simple than initRows.
     pub fn initBuffers(alloc: Allocator, capacity: u64) !Self {
-        const batch_buffer: []c.ArrowArray = try alloc.alloc(c.ArrowArray, capacity);
-        const batch_sz_mon: []u64 = try alloc.alloc(u64, capacity);
+        const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, capacity);
 
         return .{
             .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-            .items = batch_buffer,
+            .items = batch_buf,
             .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0,
-            .batch_sz = batch_sz_mon};
+            .filled = 0};
     }
 
     pub fn deinit(self: *Self, alloc: Allocator) void {
         alloc.free(self.items);
-        alloc.free(self.batch_sz);
 
         if (self.metadata != null) alloc.free(self.metadata.?);
     }
@@ -72,11 +76,16 @@ pub const ArrowStreamBuffer = struct {
         self.filled += 1;
     }
 
+    pub fn countBatchRows(self: *Self, i: usize) u64 {
+        // FIXME: Bounds check?
+        return @intCast(self.items[i].children[0].*.length);
+    }
+
     pub fn countRows(self: *Self) u64 {
         var accum: u64 = 0;
 
         for (0..self.filled) |i| {
-            accum += self.batch_sz[i];
+            accum += self.countBatchRows(i);
         }
 
         return accum;
@@ -88,6 +97,11 @@ pub const ArrowStreamBuffer = struct {
 
     pub fn setBatchSize(self: *Self, len: u64) void {
         self.batch_sz[self.filled] = len;
+    }
+
+    pub fn resize(self: *Self, alloc: Allocator) !void {
+        const bufsize = self.items.len + Self.buf_growth;
+        self.items = try alloc.realloc(self.items, bufsize);
     }
 
     pub fn shrinkToFit(self: *Self, alloc: Allocator) void {
@@ -235,17 +249,6 @@ pub fn extractValue(
     }
 }
 
-/// Implement ArrowDecimalGetBytes in place of the NanoArrow library because
-/// tranlate-c is breaking the implementation.
-fn _tmpArrowDecimalGetBytes(decimal: *c.ArrowDecimal, buf: []u8) void {
-
-    if (decimal.*.n_words == 0) {
-        @memcpy(buf, decimal.*.words); // @sizeOf(i32));
-    } else {
-        @memcpy(buf, decimal.*.words); // decimal.*.n_words * @sizeOf(u64));
-    }
-}
-
 /// Determine if an ArrowArray Slot is a null value
 pub fn isNull(col: *c.ArrowArrayView, idx: u64) bool {
     const row: i64 = @intCast(idx);
@@ -379,7 +382,7 @@ fn byteWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 /// a soft limit. The stream can be consumed later to continue
 /// past this limit if desired, but any data read will be unavailable.
 pub fn readStream(
-    conn: *db.ConnManager,
+    alloc: Allocator,
     stream: *c.ArrowArrayStream,
     buffer: *ArrowStreamBuffer
 ) anyerror!void {
@@ -392,20 +395,13 @@ pub fn readStream(
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
     //defer { if (batch.release) |release| release(&batch); }
 
-    conn.*.last_row_count = 0;
-
-    while (getNext(stream, &batch) == 0 and buffer.hasCapacity()) {
+    while (getNext(stream, &batch) == 0) {
         if (batch.release == null) break;
 
-        const batch_sz: u64 = @intCast(batch.children[0].*.length);
+        if (!buffer.hasCapacity()) {
+            try buffer.resize(alloc);
+        }
 
-        // Use the first column to determine batch metadata, such as row count
-        conn.*.last_row_count += batch_sz;
-
-        // Maybe rethink this. It's highly dependent on the order because
-        // `add` increments the slot. Add batch sizing as part of add? Or
-        // something else?
-        buffer.setBatchSize(batch_sz);
         buffer.add(batch);
     }
 }
