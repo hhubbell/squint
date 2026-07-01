@@ -2,23 +2,33 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args;
 
+const db = @import("db.zig");
+
 
 pub const SimpleArgParser = struct {
     const Self = @This();
 
     vargs: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    fn longArg(self: *Self, alloc: Allocator, key: []const u8, args: *Args.Iterator) !void {
+    fn longArg(
+        self: *Self,
+        alloc: Allocator,
+        key: []const u8,
+        args: *Args.Iterator
+    ) !void {
         const val: []const u8 = args.next() orelse "";
-
         try self.vargs.put(alloc, key[2..], val);
     }
 
-    fn shortArg(self: *Self, alloc: Allocator, key: []const u8, args: *Args.Iterator) !void {
+    fn shortArg(
+        self: *Self,
+        alloc: Allocator,
+        key: []const u8,
+        args: *Args.Iterator
+    ) !void {
         // FIXME: Do some traversal from short to long name
         try self.longArg(alloc, key, args);
     }
-
 
     pub fn parse(self: *Self, alloc: Allocator, a: Args) !void {
         var args = try a.iterateAllocator(alloc);
@@ -27,8 +37,37 @@ pub const SimpleArgParser = struct {
         // Skip program invocation arg
         _ = args.skip();
 
+        // The first argument of the cli should be the driver to use for
+        // the connection. If it isn't, then print help and exit.
+        const driver: ?[]const u8 = args.next();
+        if (driver == null or isHelp(driver.?)) {
+            help();
+            std.process.exit(0);
+        } else if (isLongArg(driver.?) or isShortArg(driver.?)) {
+            // FIXME: Use io.Writer instead of std.debug but whatever
+            std.debug.print("Incorrect program invocation.\n\n", .{});
+
+            help();
+            std.process.exit(0);
+        } else {
+            // NOTE: This is technically unnecessary but provides an earlier
+            // failure mode if an invald driver was passed to the application.
+            // The adbc spec defines a directory structure and toml config
+            // entry point. We can refer to drivers by name instead of by
+            // their static library
+            const drv_lib = db.AdbcDriverMap.get(driver.?) orelse {
+                // FIXME: Use io.Writer instead of std.debug but whatever
+                std.debug.print("Unsupported driver {s}.\n\n", .{driver.?});
+
+                help();
+                std.process.exit(0);
+            };
+
+            try self.vargs.put(alloc, "driver", drv_lib);
+        }
+
         while (args.next()) |arg| {
-            if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            if (isHelp(arg)) {
                 help();
                 std.process.exit(0);
             }
@@ -45,10 +84,15 @@ pub const SimpleArgParser = struct {
     }
 };
 
+
+fn isHelp(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
+}
+
 fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
-    std.debug.print("squint [ARGS]\n"
-        ++ "  --driver\tAny driver supported by adbc_driver_manager\n"
+    std.debug.print("squint [DRIVER] [ARGS]\n"
+        ++ "  driver\tAny driver supported by adbc_driver_manager\n"
         ++ "  --uri\t\tDatabase connection string parameters\n\n",
         .{});
 }

@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("c");
-const errors = @import("errors.zig");
 
 
 pub const ConnManager = struct {
