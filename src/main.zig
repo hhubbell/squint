@@ -4,6 +4,7 @@ const posix = std.posix;
 const SIG = posix.SIG;
 const time = std.time;
 const root = @import("sql_cli");
+const pager = @import("pager.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -55,32 +56,29 @@ pub fn main(init: std.process.Init) !void {
 
     var stderr = Io.File.stderr();
     var stderrw = stderr.writer(io, &.{});
-    const stdout = Io.File.stdout();
-    //var stdoutw = stdout.writer(io, &.{});
 
-    const winsize = windowSize(stdout.handle) catch {
+    // TODO:
+    //  We can use window size information to apply some formatting rules to
+    //  the output. But this is not currently something we do anything with.
+    const winsize = windowSize(Io.File.stdout().handle) catch {
         errs.addErr("Ioctl winsize unknown.");
         try errs.printLastErr(&stderrw.interface);
     };
     _ = winsize;
 
-    // When paging results, we need to disable SIGPIPE if we quit the pager
-    // without consuming the entire result set. This is a similar approach
-    // used in the Postgres cli
-    const pg_act = posix.Sigaction {
-        .handler = .{ .handler = SIG.IGN },
-        .mask = std.mem.zeroes(posix.sigset_t),
-        .flags = 0};
-    std.posix.sigaction(SIG.PIPE, &pg_act, null);
+    const page_exec = pager.whichPager(io, gpa);
 
     // Set a signal handler for SIGINT received while in readline mode. This
     // will capture the signal and handle it in a different way instead of
     // exiting. Instead ctrl-d will exit the repl.
-    const rl_act = posix.Sigaction {
-        .handler = .{ .handler = root.rlSigIntHandler },
-        .mask = std.mem.zeroes(posix.sigset_t),
-        .flags = 0};
-    std.posix.sigaction(SIG.INT, &rl_act, null);
+    posix.sigaction(
+        SIG.INT,
+        &posix.Sigaction {
+            .handler = .{ .handler = root.rlSigIntHandler },
+            .mask = std.mem.zeroes(posix.sigset_t),
+            .flags = 0
+        },
+        null);
 
     var conn: root.db.ConnManager = root.db.ConnManager.init();
     root.db.connectSqlite(&conn, arg_driver, arg_uri) catch |err| {
@@ -178,7 +176,7 @@ pub fn main(init: std.process.Init) !void {
 
         perf.rend = perf.lap(io);
 
-        try root.lessPipe(io, gpa, prntbuf);
+        try pager.page(io, page_exec, prntbuf);
 
         // Diagnostics
         root.format.printPerfData(gpa, perf);
