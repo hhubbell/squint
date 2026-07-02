@@ -18,8 +18,8 @@ pub const ConnManager = struct {
     }
 
     pub fn deinit(self: *Self) !void {
-       try self.checkAdbc(c.AdbcConnectionRelease(self.conn, self.err));
-       try self.checkAdbc(c.AdbcDatabaseRelease(self.db, self.err));
+       try checkAdbc(c.AdbcConnectionRelease(&self.conn, &self.err));
+       try checkAdbc(c.AdbcDatabaseRelease(&self.db, &self.err));
     }
 
     pub fn lastErrMsg(self: *Self) []const u8 {
@@ -53,7 +53,7 @@ pub fn checkAdbc(rcode: c_int) !void {
 }
 
 
-pub fn connectSqlite(mgr: *ConnManager, driver: []const u8, uri: []const u8) !void {
+pub fn connectDriver(mgr: *ConnManager, driver: []const u8, uri: []const u8) !void {
     const adbc_drv = AdbcDriverMap.get(driver) orelse return error.InvalidDriver;
 
     const c_drv: [*:0]const u8 = @ptrCast(adbc_drv.ptr);

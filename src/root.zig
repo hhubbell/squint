@@ -17,11 +17,21 @@ const c = @import("c");
 pub const rlReadline = c.readline;
 pub const rlAddHistory = c.add_history;
 
+// Library version - is there a better way to do this?
+pub const VERSION = "0.0.0";
 
-/// Yikes - dumpster signature
-pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8, writer: *std.Io.Writer) !void {
 
-    _ = alloc;
+pub const DotCommandOptions = struct {
+    errors: *errors.ErrorSingleton,
+    conn: *db.ConnManager,
+    writer: ?*Io.Writer,
+};
+
+
+/// Handle dotcommands such as .help or .exit
+pub fn dotCommand(cmd: []const u8, opts: DotCommandOptions) !void {
+
+    const log = opts.errors;
 
     // Rethink this when we have more commands, e.g. hashmap with
     // some callable or something else.
@@ -30,9 +40,15 @@ pub fn dotCommand(alloc: Allocator, log: *errors.ErrorSingleton, cmd: []const u8
     const dotc = cmd[1..];
 
     if (std.mem.eql(u8, dotc, "errors")) {
-        try log.printAllErrs(writer);
+        try log.printAllErrs(opts.writer.?);
+    } else if (std.mem.eql(u8, dotc, "exit")) {
+        try opts.conn.deinit();
+        std.process.exit(0);
     } else if (std.mem.eql(u8, dotc, "save")) {
-        log.addErr("Save not yet implemented.");
+        log.addErr("\".save\" not yet implemented.");
+        return error.DotCommandError;
+    } else if (std.mem.eql(u8, dotc, "source")) {
+        log.addErr("\".source\" not yet implemented.");
         return error.DotCommandError;
     } else {
         log.addErr("Invalid dot command.");

@@ -4,7 +4,19 @@ const Args = std.process.Args;
 
 const db = @import("db.zig");
 
-
+/// What if there was like an API where you could "Parse into" a struct.
+/// The struct would define the allowed arguments and act as the carrier
+/// for the parsed results. Would require some type introspection to
+/// determine allowed values at compile time, which I think is possible?
+///
+/// This API doesn't do that, but it would be cool.
+///
+/// Given that something more robust than what I've implemented below is on the
+/// roadmap (https://codeberg.org/ziglang/zig/issues/30677), I'll probably wait
+/// until something comes from stdlib, rather than pursuing this idea.
+///
+/// But it would be cool.
+///
 pub const SimpleArgParser = struct {
     const Self = @This();
 

@@ -12,6 +12,7 @@ pub const ErrorSingleton = struct {
     stack: []?[]const u8,
     head: usize,
     fill: usize,
+    fatal: bool,
 
     pub fn init(alloc: Allocator, size: usize) !Self {
         const stack = try alloc.alloc(?[]const u8, size);
@@ -21,7 +22,8 @@ pub const ErrorSingleton = struct {
             .alloc = alloc,
             .stack = stack,
             .head = 0,
-            .fill = 0};
+            .fill = 0,
+            .fatal = false};
     }
 
     pub fn deinit(self: *Self, alloc: Allocator) void {
@@ -56,6 +58,15 @@ pub const ErrorSingleton = struct {
             self.fill += 1;
         }
 
+    }
+
+    pub fn addFatalErr(self: *Self, msg: []const u8) void {
+        self.addErr(msg);
+        self.fatal = true;
+    }
+
+    pub fn numErrs(self: *Self) usize {
+        return self.fill;
     }
 
     fn idxErr(self: *Self, i: usize) []const u8 {

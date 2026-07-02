@@ -1,5 +1,4 @@
 const std = @import("std");
-const Io = std.Io;
 const posix = std.posix;
 const SIG = posix.SIG;
 const time = std.time;
@@ -7,26 +6,63 @@ const root = @import("sql_cli");
 const pager = @import("pager.zig");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
+
+const StartupParams = struct {
+    driver: ?[]const u8,
+    winsize: ?posix.winsize,
+    errors: ?*root.errors.ErrorSingleton
+};
+
+
+/// Print startup information
+fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
+
+    try writer.print("Squint {s} | ADBC CLI\n"
+        ++ "Type \".help\" for dotcommands. "
+        ++ "Type \".exit\" or ^D to quit.\n", .{root.VERSION});
+
+    if (parms.driver) |d| {
+        try writer.print("Driver \"{s}\"\n", .{d});
+    }
+
+    // TODO URI string or connection params?
+
+    if (parms.winsize) |w| {
+        try writer.print("Output window {d} x {d}\n", .{w.row, w.col});
+    }
+
+    // If we encountered any non-fatal errors during startup, print them
+    // all now.
+    if (parms.errors != null) {
+        const n_err = parms.errors.?.numErrs();
+
+        if (n_err > 0) {
+            try writer.print("\n{s}Startup Errors ({d}):\n", .{root.format.RED, n_err});
+            try parms.errors.?.printAllErrs(writer);
+            try writer.print("{s}", .{root.format.RESET});
+        }
+    }
+
+}
 
 /// Get the output handle window size
-fn windowSize(handle: Io.File.Handle) !posix.winsize {
-    _ = handle;
-    return .{ .row = 0, .col = 80, .xpixel = 0, .ypixel = 0};
+fn windowSize(handle: Io.File.Handle, errs: *root.errors.ErrorSingleton) posix.winsize {
+    var winsize: posix.winsize = .{
+        .row = 0,
+        .col = 0,
+        .xpixel = 0,
+        .ypixel = 0
+    };
 
-//    var winsize: posix.winsize = .{
-//        .row = 0,
-//        .col = 0,
-//        .xpixel = 0,
-//        .ypixel = 0};
-//
-//    const err = posix.system.ioctl(handle, posix.T.IOCGWINSZ, @intFromPtr(&winsize));
-//
-//    if (posix.errno(err) != .SUCCESS) {
-//        return error.IoctlError;
-//    }
-//
-//    return winsize;
+    const err = posix.system.ioctl(handle, posix.T.IOCGWINSZ, @intFromPtr(&winsize));
+
+    if (posix.errno(err) != .SUCCESS) {
+        errs.addErr("Ioctl winsize unknown.");
+    }
+
+    return winsize;
 }
 
 /// REPL loop
@@ -44,11 +80,6 @@ pub fn main(init: std.process.Init) !void {
     var argp: root.cli.SimpleArgParser = .{};
     defer argp.vargs.deinit(gpa);
 
-    // TODO:
-    //  What if there was like an API where you could "Parse into" a struct.
-    //  The struct would define the allowed arguments and act as the carrier
-    //  for the parsed results. Would require some type introspection to
-    //  determine allowed values at compile time, which I think is possible?
     try argp.parse(gpa, init.minimal.args);
 
     const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
@@ -60,11 +91,7 @@ pub fn main(init: std.process.Init) !void {
     // TODO:
     //  We can use window size information to apply some formatting rules to
     //  the output. But this is not currently something we do anything with.
-    const winsize = windowSize(Io.File.stdout().handle) catch {
-        errs.addErr("Ioctl winsize unknown.");
-        try errs.printLastErr(&stderrw.interface);
-    };
-    _ = winsize;
+    const winsize = windowSize(Io.File.stdout().handle, &errs);
 
     const page_exec = pager.whichPager(io, gpa);
 
@@ -81,15 +108,25 @@ pub fn main(init: std.process.Init) !void {
         null);
 
     var conn: root.db.ConnManager = root.db.ConnManager.init();
-    root.db.connectSqlite(&conn, arg_driver, arg_uri) catch |err| {
+    defer _ = conn.deinit() catch {};
+
+    root.db.connectDriver(&conn, arg_driver, arg_uri) catch |err| {
         switch (err) {
-            error.InvalidDriver => errs.addErr("Unsupported driver."),
+            error.InvalidDriver => errs.addFatalErr("Unsupported driver."),
             else => errs.addErr(conn.lastErrMsg())
         }
-
-        try errs.printLastErr(&stderrw.interface);
-        std.process.exit(1);
     };
+
+    try startupMessage(&stderrw.interface, .{
+        .driver = arg_driver,
+        .winsize = winsize,
+        .errors = &errs
+    });
+
+    // If we encountered a fatal error during startup, just abort from here
+    if (errs.fatal) {
+        return error.FatalStartupError;
+    }
 
     while (true) {
         const query = root.rlReadline("> ");
@@ -108,7 +145,11 @@ pub fn main(init: std.process.Init) !void {
 
         // Dot commands are meta commands for interacting with the session.
         if (query[0] == '.') {
-            root.dotCommand(gpa, &errs, std.mem.span(query), &stderrw.interface) catch {
+            root.dotCommand(std.mem.span(query), .{
+                .errors = &errs,
+                .conn = &conn,
+                .writer = &stderrw.interface
+            }) catch {
                 try errs.printLastErr(&stderrw.interface);
             };
 
@@ -136,6 +177,8 @@ pub fn main(init: std.process.Init) !void {
 
         //var res = try root.stream.ArrowStreamBuffer.initRows(gpa, 100_000); // prod: 1024
         var res = try root.stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+        defer res.deinit(gpa);
+
         root.stream.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
                 error.AdbcStreamError => {
@@ -155,7 +198,6 @@ pub fn main(init: std.process.Init) !void {
             try errs.printLastErr(&stderrw.interface);
             continue;
         };
-        defer res.deinit(gpa);
 
         perf.load = perf.lap(io);
 

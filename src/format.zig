@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 
 const PAD: usize = 2;
 pub const GREY: []const u8 = "\x1b[37m";
+pub const RED: []const u8 = "\x1b[31m";
 pub const RESET: []const u8 = "\x1b[0m";
 
 pub const HorizontalSeparator = enum { Top, Middle, Bottom };
