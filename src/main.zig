@@ -11,6 +11,7 @@ const Io = std.Io;
 
 const StartupParams = struct {
     driver: ?[]const u8,
+    pager: ?pager.PagerType,
     winsize: ?posix.winsize,
     errors: ?*root.errors.ErrorSingleton
 };
@@ -25,6 +26,10 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
     if (parms.driver) |d| {
         try writer.print("Driver \"{s}\"\n", .{d});
+    }
+
+    if (parms.pager) |p| {
+        try writer.print("Pager \"{s}\"\n", .{@tagName(p)});
     }
 
     // TODO URI string or connection params?
@@ -93,7 +98,7 @@ pub fn main(init: std.process.Init) !void {
     //  the output. But this is not currently something we do anything with.
     const winsize = windowSize(Io.File.stdout().handle, &errs);
 
-    const page_exec = pager.whichPager(io, gpa);
+    const page_exec = pager.whichPager(io, init.environ_map);
 
     // Set a signal handler for SIGINT received while in readline mode. This
     // will capture the signal and handle it in a different way instead of
@@ -119,6 +124,7 @@ pub fn main(init: std.process.Init) !void {
 
     try startupMessage(&stderrw.interface, .{
         .driver = arg_driver,
+        .pager = page_exec,
         .winsize = winsize,
         .errors = &errs
     });

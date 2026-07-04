@@ -2,10 +2,15 @@ const std = @import("std");
 const posix = std.posix;
 
 const Allocator = std.mem.Allocator;
+const Dir = std.Io.Dir;
+const Environ = std.process.Environ;
 const Io = std.Io;
 const SIG = posix.SIG;
 
 
+/// Known (non-exhaustive) list of pagers that we will pipe out to for long
+/// results. The order matters here, as the search for an appropriate pager
+/// will return as soon as a match is found in PATH
 pub const PagerType = enum {
     less, nopager
 };
@@ -16,17 +21,37 @@ pub const PagerType = enum {
 /// but we'll get there
 ///
 /// Also right now only less is supported!
-/// (And we don't even really check!)
-pub fn whichPager(io: Io, alloc: Allocator) PagerType {
-    _ = io;
-    _ = alloc;
+pub fn whichPager(io: Io, env: *Environ.Map) PagerType {
+    const path = env.get("PATH") orelse return .nopager;
 
-    // When paging results, we need to disable SIGPIPE if we quit the pager
-    // without consuming the entire result set. This is a similar approach
-    // used in the Postgres cli
-    disableSigPipe();
+    for (std.enums.values(PagerType)) |typ| {
+        if (typ == .nopager) {
+            continue;
+        }
 
-    return .less;
+        var iter = std.mem.tokenizeSequence(u8, path, ":");
+
+        while (iter.next()) |p| {
+            const dir = Dir.cwd().openDir(io, p, .{}) catch continue;
+            defer dir.close(io);
+
+            const handle = dir.openFile(io, @tagName(typ), .{}) catch continue;
+            defer handle.close(io);
+
+            const st = std.Io.File.stat(handle, io) catch continue;
+
+            if (st.kind == .file) {
+                // When paging results, we need to disable SIGPIPE if we quit the pager
+                // without consuming the entire result set. This is a similar approach
+                // used in the Postgres cli
+                disableSigPipe();
+
+                return typ;
+            }
+        }
+    }
+
+    return .nopager;
 }
 
 /// Take an input buffer and write it to the session pager.
