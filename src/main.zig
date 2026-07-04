@@ -98,14 +98,14 @@ pub fn main(init: std.process.Init) !void {
     // Set a signal handler for SIGINT received while in readline mode. This
     // will capture the signal and handle it in a different way instead of
     // exiting. Instead ctrl-d will exit the repl.
-    posix.sigaction(
-        SIG.INT,
-        &posix.Sigaction {
-            .handler = .{ .handler = root.rlSigIntHandler },
-            .mask = std.mem.zeroes(posix.sigset_t),
-            .flags = 0
-        },
-        null);
+    //posix.sigaction(
+    //    SIG.INT,
+    //    &posix.Sigaction {
+    //        .handler = .{ .handler = root.rlSigIntHandler },
+    //        .mask = std.mem.zeroes(posix.sigset_t),
+    //        .flags = 0
+    //    },
+    //    null);
 
     var conn: root.db.ConnManager = root.db.ConnManager.init();
     defer _ = conn.deinit() catch {};
@@ -131,9 +131,14 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const query = root.rlReadline("> ");
         
-        // A Null value here indicates a ctrl-d keypress. Exit the main loop.
+        // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
+        // then reset and continue. Otherwise exit the main loop.
         if (query == null) {
-            break;
+            if (std.c.errno(-1) == std.c.E.AGAIN) {
+                continue;
+            } else {
+                break;
+            }
         }
 
         // If the user entered a blank string, do not continue.
@@ -141,7 +146,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        root.rlAddHistory(query);
+        _ = root.rlAddHistory(query);
 
         // Dot commands are meta commands for interacting with the session.
         if (query[0] == '.') {

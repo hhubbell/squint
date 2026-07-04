@@ -4,3 +4,6 @@
 [submodule "vendor/arrow-nanoarrow"]
 	path = vendor/arrow-nanoarrow
 	url = https://github.com/apache/arrow-nanoarrow.git
+[submodule "vendor/linenoise"]
+	path = vendor/linenoise
+	url = https://github.com/antirez/linenoise.git

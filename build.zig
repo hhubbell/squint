@@ -9,6 +9,28 @@ pub fn build(b: *std.Build) void {
     const cc_flg = &[_][]const u8{ "-std=c++17" };
 
 
+    // dependency: linenoise
+    const linenoise_path: []const u8 = "vendor/linenoise";
+    const linenoise = b.addLibrary(.{
+        .name = "linenoise",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        })
+    });
+
+    linenoise.root_module.addIncludePath(b.path(linenoise_path));
+    linenoise.root_module.addCSourceFile(.{
+        .file = b.path(b.pathJoin(&.{ linenoise_path, "linenoise.c" })),
+        .flags = &.{
+            "-std=c17",
+            "-D_POSIX_C_SOURCE=200809L",
+            "-D_DEFAULT_SOURCE"
+        }
+    });
+
     // arrow-adbc dependency: nanoarrow
     const nanoarrow_path: []const u8 = "vendor/arrow-nanoarrow";
     const nanoarrow = b.addLibrary(.{
@@ -41,6 +63,7 @@ pub fn build(b: *std.Build) void {
     addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/device"}), ".c", c_flg);
     addCSourceFileGlob(b, nanoarrow.root_module, b.pathJoin(&.{ nanoarrow_path, "src/nanoarrow/ipc"}), ".c", c_flg);
 
+    // dependency: arrow-adbc
     const adbc_path: []const u8 = "vendor/arrow-adbc/c";
     const adbc = b.addLibrary(.{
         .name = "arrow-adbc",
@@ -99,6 +122,7 @@ pub fn build(b: *std.Build) void {
     t.addIncludePath(b.path(b.pathJoin(&.{ adbc_path, "include/arrow-adbc" })));
     t.addConfigHeader(nanoarrow_config);
     t.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
+    t.addIncludePath(b.path(linenoise_path));
     
     const mod = b.addModule("sql_cli", .{
         .root_source_file = b.path("src/root.zig"),
@@ -110,7 +134,7 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(driver_mgr);
     mod.linkLibrary(nanoarrow);
     mod.linkLibrary(adbc);
-    mod.linkSystemLibrary("readline", .{});
+    mod.linkLibrary(linenoise);
 
     const exe = b.addExecutable(.{
         .name = "sql_cli",

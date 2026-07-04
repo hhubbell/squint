@@ -14,8 +14,8 @@ pub const perf = @import("perf.zig");
 
 // Expose required c functions
 const c = @import("c");
-pub const rlReadline = c.readline;
-pub const rlAddHistory = c.add_history;
+pub const rlReadline = c.linenoise;
+pub const rlAddHistory = c.linenoiseHistoryAdd;
 
 // Library version - is there a better way to do this?
 pub const VERSION = "0.0.0";
