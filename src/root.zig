@@ -12,6 +12,8 @@ pub const format = @import("format.zig");
 pub const stream = @import("stream.zig");
 pub const perf = @import("perf.zig");
 
+pub const config = @import("config");
+
 // Expose required c functions
 const c = @import("c");
 pub const rlReadline = c.linenoise;
@@ -57,19 +59,21 @@ pub fn dotCommand(cmd: []const u8, opts: DotCommandOptions) !void {
 }
 
 
-/// Set a signal handler specifically for when in readline mode to handle
-/// SIGINT signals from users entering ctrl-c. When his happens. Abandon
-/// the current input and give a new prompt.
-///
-/// According to Readline documentation, the default builtin SIGINT handler
-/// should have handled cleanup of the input so far, so we do not need to
-/// do our own housekeeping.
-pub fn rlSigIntHandler(sig: SIG) callconv(.c) void {
-    _ = sig;
-
-    _ = c.rl_crlf();
-    _ = c.rl_on_new_line();
-    c.rl_replace_line("", 0);
-    c.rl_redisplay();
-}
-
+// Set a signal handler specifically for when in readline mode to handle
+// SIGINT signals from users entering ctrl-c. When his happens. Abandon
+// the current input and give a new prompt.
+//
+// According to Readline documentation, the default builtin SIGINT handler
+// should have handled cleanup of the input so far, so we do not need to
+// do our own housekeeping.
+//
+// This function is deprecated with the move to `linenoise`, which already
+// captures SIGINT and returns it as EAGAIN
+//pub fn rlSigIntHandler(sig: SIG) callconv(.c) void {
+//    _ = sig;
+//
+//    _ = c.rl_crlf();
+//    _ = c.rl_on_new_line();
+//    c.rl_replace_line("", 0);
+//    c.rl_redisplay();
+//}

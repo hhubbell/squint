@@ -90,6 +90,18 @@ pub fn main(init: std.process.Init) !void {
     const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
     const arg_uri: []const u8 = argp.vargs.get("uri") orelse ":memory:";
 
+    var cfg: root.config.Config = undefined;
+    if (argp.vargs.get("profile")) |profile| {
+        // Use arena allocator for profile config parsing
+        cfg = try root.config.readProfile(io,
+            init.arena.child_allocator,
+            init.environ_map,
+            arg_driver,
+            profile);
+    } else {
+        cfg = try root.config.simpleConfig(arg_driver, arg_uri);
+    }
+
     var stderr = Io.File.stderr();
     var stderrw = stderr.writer(io, &.{});
 
@@ -115,11 +127,8 @@ pub fn main(init: std.process.Init) !void {
     var conn: root.db.ConnManager = root.db.ConnManager.init();
     defer _ = conn.deinit() catch {};
 
-    root.db.connectDriver(&conn, arg_driver, arg_uri) catch |err| {
-        switch (err) {
-            error.InvalidDriver => errs.addFatalErr("Unsupported driver."),
-            else => errs.addErr(conn.lastErrMsg())
-        }
+    root.db.connectDriver(gpa, &conn, cfg) catch {
+        errs.addErr(conn.lastErrMsg());
     };
 
     try startupMessage(&stderrw.interface, .{

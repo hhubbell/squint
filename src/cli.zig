@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args;
 
-const db = @import("db.zig");
 
 /// What if there was like an API where you could "Parse into" a struct.
 /// The struct would define the allowed arguments and act as the carrier
@@ -67,15 +66,15 @@ pub const SimpleArgParser = struct {
             // The adbc spec defines a directory structure and toml config
             // entry point. We can refer to drivers by name instead of by
             // their static library
-            const drv_lib = db.AdbcDriverMap.get(driver.?) orelse {
-                // FIXME: Use io.Writer instead of std.debug but whatever
-                std.debug.print("Unsupported driver {s}.\n\n", .{driver.?});
+            //const drv_lib = db.AdbcDriverMap.get(driver.?) orelse {
+            //    // FIXME: Use io.Writer instead of std.debug but whatever
+            //    std.debug.print("Unsupported driver {s}.\n\n", .{driver.?});
 
-                help();
-                std.process.exit(0);
-            };
+            //    help();
+            //    std.process.exit(0);
+            //};
 
-            try self.vargs.put(alloc, "driver", drv_lib);
+            try self.vargs.put(alloc, "driver", driver.?);
         }
 
         while (args.next()) |arg| {
@@ -105,7 +104,8 @@ fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
     std.debug.print("squint [DRIVER] [ARGS]\n"
         ++ "  driver\tAny driver supported by adbc_driver_manager\n"
-        ++ "  --uri\t\tDatabase connection string parameters\n\n",
+        ++ "  --uri\t\tDatabase connection string parameters\n\n"
+        ++ "  --profile\tConnection profile config name\n\n",
         .{});
 }
 

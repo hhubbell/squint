@@ -1,6 +1,8 @@
 const std = @import("std");
 const c = @import("c");
+const config = @import("config");
 
+const Allocator = std.mem.Allocator;
 
 pub const ConnManager = struct {
     const Self = @This();
@@ -32,19 +34,6 @@ pub const ConnManager = struct {
 };
 
 
-/// WARNING: This currently only works for ADBC built drivers made available
-/// through the adbc driver manager interface.
-/// FIXME: No longer necessary that we use a newer adbc spec, which defines
-/// a directory structure and toml config entry point. We can refer to drivers
-/// by name instead of by their static library
-pub const AdbcDriverMap = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "duckdb", "duckdb" },
-    .{ "postgres", "postgres" },
-    .{ "sqlite",  "sqlite" },
-    .{ "snowflake", "snowflake" }
-});
-
-
 /// Wraps an Arrow ADBC function call in error handling
 pub fn checkAdbc(rcode: c_int) !void {
     if (rcode != c.ADBC_STATUS_OK) {
@@ -52,23 +41,22 @@ pub fn checkAdbc(rcode: c_int) !void {
     }
 }
 
+pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: config.Config) !void {
+    const c_drv: [:0]const u8 = try alloc.dupeSentinel(u8, cfg.driver, 0);
+    const c_uri: [:0]const u8 = try alloc.dupeSentinel(u8, cfg.getUri(), 0);
 
-pub fn connectDriver(mgr: *ConnManager, driver: []const u8, uri: []const u8) !void {
-    const adbc_drv = AdbcDriverMap.get(driver) orelse return error.InvalidDriver;
-
-    const c_drv: [*:0]const u8 = @ptrCast(adbc_drv.ptr);
-    const c_uri: [*:0]const u8 = @ptrCast(uri.ptr);
+    defer alloc.free(c_drv);
+    defer alloc.free(c_uri);
 
     // XXX:
     // The duckdb docs say use "path" but URI also works. Presumably URI could
     // add additional things but IDK what that would be
     // const c_psc: [*:0]const u8 = if (std.mem.eql(u8, adbc_drv, "duckdb")) "path" else "uri";
-    const c_psc: [*:0]const u8 = "uri"; 
 
     try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
     try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
-    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", c_drv, &mgr.err));
-    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, c_psc, c_uri, &mgr.err));
+    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", @ptrCast(c_drv), &mgr.err));
+    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "uri", @ptrCast(c_uri), &mgr.err));
     try checkAdbc(c.AdbcDatabaseInit(&mgr.db, &mgr.err));
 
     try checkAdbc(c.AdbcConnectionNew(&mgr.conn, &mgr.err));

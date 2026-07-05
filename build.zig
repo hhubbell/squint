@@ -123,11 +123,19 @@ pub fn build(b: *std.Build) void {
     t.addConfigHeader(nanoarrow_config);
     t.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
     t.addIncludePath(b.path(linenoise_path));
-    
+
+    const config = b.addModule("config", .{
+        .root_source_file = b.path("src/config/root.zig"),
+        .target = target,
+        .optimize = optimize
+    });
+
     const mod = b.addModule("sql_cli", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
         .imports = &.{
+            .{ .name = "config", .module = config },
             .{ .name = "c", .module = t.mod }
         }
     });
