@@ -43,20 +43,38 @@ pub fn checkAdbc(rcode: c_int) !void {
 
 pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: config.Config) !void {
     const c_drv: [:0]const u8 = try alloc.dupeSentinel(u8, cfg.driver, 0);
-    const c_uri: [:0]const u8 = try alloc.dupeSentinel(u8, cfg.getUri(), 0);
-
     defer alloc.free(c_drv);
-    defer alloc.free(c_uri);
-
-    // XXX:
-    // The duckdb docs say use "path" but URI also works. Presumably URI could
-    // add additional things but IDK what that would be
-    // const c_psc: [*:0]const u8 = if (std.mem.eql(u8, adbc_drv, "duckdb")) "path" else "uri";
 
     try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
     try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
     try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", @ptrCast(c_drv), &mgr.err));
-    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "uri", @ptrCast(c_uri), &mgr.err));
+
+    // We guarantee that at least uri is part of the config, so we do not need
+    // to explicitly set this option. Instead we just iterate over every field
+    // and set the option on the connection.
+    //
+    // XXX:
+    // The duckdb docs say use "path" but URI also works. Presumably URI could
+    // add additional things but IDK what that would be. It doesn't matter
+    // because we just iterate over the struct. This comment is kind of
+    // pointless, but I think I'll need to remember this someday.
+    const cfg_iter = try cfg.iterFields(alloc);
+    defer alloc.free(cfg_iter);
+
+    for (cfg_iter) |kv| {
+        if (kv.val == null) {
+            continue;
+        }
+
+        const c_k: [:0]const u8 = try alloc.dupeSentinel(u8, kv.key, 0);
+        const c_v: [:0]const u8 = try alloc.dupeSentinel(u8, kv.val.?, 0);
+
+        defer alloc.free(c_k);
+        defer alloc.free(c_v);
+
+        try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_k), @ptrCast(c_v), &mgr.err));
+    }
+
     try checkAdbc(c.AdbcDatabaseInit(&mgr.db, &mgr.err));
 
     try checkAdbc(c.AdbcConnectionNew(&mgr.conn, &mgr.err));

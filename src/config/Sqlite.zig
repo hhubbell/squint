@@ -7,7 +7,7 @@ uri: []const u8,
 
 /// Whether to enable (“true”) or disable (“false”) extension loading. The
 /// default is disabled.
-@"adbc.sqlite.load_extension.enabled": bool = false,
+@"adbc.sqlite.load_extension.enabled": ?[]const u8 = null,
 
 /// To load an extension, first set this option to the path to the extension
 /// to load. This will not load the extension yet.

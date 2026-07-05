@@ -18,6 +18,11 @@ pub const DriverConfig = union(Drivers) {
     sqlite: Sqlite
 };
 
+pub const ConfigKeyValue = struct {
+    key: []const u8,
+    val: ?[]const u8
+};
+
 pub const AdbcDriverMap = std.StaticStringMap(Drivers).initComptime(.{
     //.{ "duckdb", .duckdb },
     //.{ "postgres", .postgres },
@@ -37,8 +42,27 @@ pub const Config = struct {
         }
     }
 
-    pub fn deinit(self: *Self, alloc: Allocator) void {
-        alloc.free(self.profile);
+    /// TODO: This would be nice if we followed the .next() pattern instead
+    /// of returning a slice of tuples. But this gets us going at least
+    pub fn iterFields(self: Self, alloc: Allocator) ![]ConfigKeyValue {
+        switch (self.profile) {
+            inline else => |t| {
+                const T = @TypeOf(t);
+                const info = @typeInfo(T);
+                const fields = switch(info) {
+                    .@"struct" => |s| s.field_names,
+                    else => unreachable
+                };
+
+                const res: []ConfigKeyValue = try alloc.alloc(ConfigKeyValue, fields.len);
+
+                inline for (fields, 0..) |f, i| {
+                    res[i] = .{ .key = f, .val = @field(t, f) };
+                }
+
+                return res;
+            }
+        }
     }
 };
 
