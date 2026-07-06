@@ -1,5 +1,3 @@
-const std = @import("std");
-
 /// A filename or URI filename specifying the sqlite database. See
 /// https://www.sqlite.org/c3ref/open.html#urifilenamesinsqlite3open
 /// for more details about URI filenames.
@@ -20,3 +18,4 @@ uri: []const u8,
 /// The size of batches to read. Hence, this also controls how many rows are
 /// read to infer the Arrow type.
 @"adbc.sqlite.query.batch_rows": ?[]const u8 = null,
+

@@ -7,28 +7,34 @@ const Io = std.Io;
 
 pub const CONFIG_PATH: []const u8 = ".config/squint";
 
+pub const Duckdb = @import("Duckdb.zig");
+pub const Postgresql = @import("Postgresql.zig");
+pub const Snowflake = @import("Snowflake.zig");
 pub const Sqlite = @import("Sqlite.zig");
 
 
 pub const Drivers = enum {
-    sqlite
+    duckdb, postgresql, snowflake, sqlite
 };
 
 pub const DriverConfig = union(Drivers) {
+    duckdb: Duckdb,
+    postgresql: Postgresql,
+    snowflake: Snowflake,
     sqlite: Sqlite
 };
+
+pub const AdbcDriverMap = std.StaticStringMap(Drivers).initComptime(.{
+    .{ "duckdb", .duckdb },
+    .{ "postgresql", .postgresql },
+    .{ "sqlite",  .sqlite },
+    .{ "snowflake", .snowflake }
+});
 
 pub const ConfigKeyValue = struct {
     key: []const u8,
     val: ?[]const u8
 };
-
-pub const AdbcDriverMap = std.StaticStringMap(Drivers).initComptime(.{
-    //.{ "duckdb", .duckdb },
-    //.{ "postgres", .postgres },
-    .{ "sqlite",  .sqlite },
-    //.{ "snowflake", .snowflake }
-});
 
 pub const Config = struct {
     const Self = @This();
@@ -100,34 +106,36 @@ pub fn readProfile(
 
     const tag = AdbcDriverMap.get(driver) orelse return error.ProfileError;
 
-    const T = switch (tag) {
-        .sqlite => Sqlite
-    };
-    
-    const parsed = try readConfig(io, alloc, path, T);
-    defer parsed.deinit();
+    switch (tag) {
+        inline else => |t| {
+            const T = comptime switch (t) {
+                .duckdb => Duckdb,
+                .postgresql => Postgresql,
+                .snowflake => Snowflake,
+                .sqlite => Sqlite
+            };
 
-    return .{
-        .driver = driver,
-        .profile = @unionInit(DriverConfig, @tagName(tag), parsed.value)
-    };
+            const parsed = try readConfig(io, alloc, path, T);
+            defer parsed.deinit();
+
+            return .{
+                .driver = driver,
+                .profile = @unionInit(DriverConfig, @tagName(t), parsed.value)
+            };
+        }
+    }
 }
 
 pub fn simpleConfig(driver: []const u8, uri: []const u8) !Config {
     const tag = AdbcDriverMap.get(driver) orelse return error.ProfileError;
 
-    const T = switch (tag) {
-        .sqlite => Sqlite
+    const profile = switch (tag) {
+        inline else => |t| @unionInit(DriverConfig, @tagName(t), .{ .uri = uri }),
     };
-    
-    const dat = createConfig(T, .{ .uri = uri });
 
     return .{
         .driver = driver,
-        .profile = @unionInit(DriverConfig, @tagName(tag), dat)
+        .profile = profile
     };
 }
 
-fn createConfig(comptime T: type, val: T) T {
-    return val;
-}
