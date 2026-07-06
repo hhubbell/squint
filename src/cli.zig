@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config");
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args;
 
@@ -66,13 +67,9 @@ pub const SimpleArgParser = struct {
             // The adbc spec defines a directory structure and toml config
             // entry point. We can refer to drivers by name instead of by
             // their static library
-            //const drv_lib = db.AdbcDriverMap.get(driver.?) orelse {
-            //    // FIXME: Use io.Writer instead of std.debug but whatever
-            //    std.debug.print("Unsupported driver {s}.\n\n", .{driver.?});
-
-            //    help();
-            //    std.process.exit(0);
-            //};
+            if (!config.AdbcDriverMap.has(driver.?)) {
+                return error.UnsupportedDriverError;
+            }
 
             try self.vargs.put(alloc, "driver", driver.?);
         }
@@ -100,7 +97,7 @@ fn isHelp(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
 }
 
-fn help() void {
+pub fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
     std.debug.print("squint [DRIVER] [ARGS]\n"
         ++ "  driver\tAny driver supported by adbc_driver_manager\n"

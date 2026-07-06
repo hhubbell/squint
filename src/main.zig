@@ -85,7 +85,16 @@ pub fn main(init: std.process.Init) !void {
     var argp: root.cli.SimpleArgParser = .{};
     defer argp.vargs.deinit(gpa);
 
-    try argp.parse(gpa, init.minimal.args);
+    argp.parse(gpa, init.minimal.args) catch |err| {
+        switch (err) {
+            error.UnsupportedDriverError => {
+                root.cli.help();
+
+                return error.FatalStartupError;
+            },
+            else => errs.addErr("Unexpected argument parsing error.")
+        }
+    };
 
     const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
     const arg_uri: []const u8 = argp.vargs.get("uri") orelse ":memory:";
@@ -145,7 +154,7 @@ pub fn main(init: std.process.Init) !void {
 
     while (true) {
         const query = root.rlReadline("> ");
-        
+
         // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
         // then reset and continue. Otherwise exit the main loop.
         if (query == null) {
