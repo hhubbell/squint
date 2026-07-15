@@ -3,6 +3,11 @@ const c = @import("c");
 const config = @import("config");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const posix = std.posix;
+
+var cancelExecAtom = std.atomic.Value(bool).init(false);
+
 
 pub const ConnManager = struct {
     const Self = @This();
@@ -95,15 +100,89 @@ pub fn prepareStatement(mgr: *ConnManager, query: []const u8) !c.AdbcStatement {
     return stmt;
 }
 
-pub fn executeStatement(mgr: *ConnManager, stmt: *c.AdbcStatement) !c.ArrowArrayStream {
+/// Execute an AdbcStatement with cancelation by running the query concurrently
+/// and listening for a possible SIGINT to cancel. If the query returns or
+/// SIGINT is received, then clean up and return. If SIGINT is received, then
+/// also cancel the execution and return error.Cancelable
+pub fn executeStatementWithCancel(
+    io: Io,
+    mgr: *ConnManager,
+    stmt: *c.AdbcStatement
+) !c.ArrowArrayStream {
+    cancelExecAtom.store(false, .release);
+
+    const Branch = union(enum) {
+        runner: anyerror!void,
+        cancel: anyerror!void
+    };
+
+    var buf: [2]Branch = undefined;
+    var sel: Io.Select(Branch) = .init(io, &buf);
+
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
-    try checkAdbc(c.AdbcStatementExecuteQuery(stmt, &stream, null, &mgr.err));
+    sel.async(.runner, executeStatement, .{mgr, stmt, &stream});
 
-    return stream;
+    // Install a temporary signal handler to capture ctrl-c and cancel
+    // the query being executed.
+    posix.sigaction(
+        posix.SIG.INT,
+        &posix.Sigaction {
+            .handler = .{ .handler = handleSigIntCancel },
+            .mask = std.mem.zeroes(posix.sigset_t),
+            .flags = 0
+        },
+        null
+    );   
+
+    sel.async(.cancel, cancelExecution, .{io, mgr, stmt});
+
+    const res = try sel.await();
+    _ = sel.cancel();
+
+    // Restore the signal handler to the default
+    posix.sigaction(
+        posix.SIG.INT,
+        &posix.Sigaction {
+            .handler = .{ .handler = std.posix.SIG.DFL },
+            .mask = std.mem.zeroes(posix.sigset_t),
+            .flags = 0
+        },
+        null
+    );
+
+    switch (res) {
+        .runner => return stream,
+        .cancel => return error.ExecutionCanceled
+    }
 }
 
 pub fn releaseStatement(mgr: *ConnManager, stmt: *c.AdbcStatement) !void {
     try checkAdbc(c.AdbcStatementRelease(stmt, &mgr.err));
 }
 
+/// Wrap AdbcStatementExecuteQuery in error handling
+fn executeStatement(
+    mgr: *ConnManager,
+    stmt: *c.AdbcStatement,
+    stream: *c.ArrowArrayStream
+) !void {
+    try checkAdbc(c.AdbcStatementExecuteQuery(stmt, stream, null, &mgr.err));
+}
+
+/// If SIGINT is received, set the global `cancelExecution` atomic to true
+fn handleSigIntCancel(sig: posix.SIG) callconv(.c) void {
+    _ = sig;
+    cancelExecAtom.store(true, .release);
+}
+
+/// Cancels execution of a query if `cancelExecAtom` is set to true in a
+/// different thread.
+fn cancelExecution(io: Io, mgr: *ConnManager, stmt: *c.AdbcStatement) !void {
+    while (!cancelExecAtom.load(.acquire)) {
+        try io.sleep(Io.Duration.fromMilliseconds(1), .real);
+    }
+
+    // We got a request for cancelation. Clean up the running query
+    try checkAdbc(c.AdbcStatementCancel(stmt, &mgr.err));
+}
