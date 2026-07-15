@@ -198,7 +198,7 @@ pub fn main(init: std.process.Init) !void {
 
         var strm = root.db.executeStatementWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {
-                error.ExecutionCanceled => errs.addErr("Execution canceled."),
+                error.Canceled => errs.addErr("Execution canceled."),
                 else => errs.addErr(conn.lastErrMsg())
             }
             try errs.printLastErr(&stderrw.interface);

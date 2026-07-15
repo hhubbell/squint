@@ -152,8 +152,8 @@ pub fn executeStatementWithCancel(
     );
 
     switch (res) {
-        .runner => return stream,
-        .cancel => return error.ExecutionCanceled
+        .runner => |r| { try r; return stream; },
+        .cancel => return error.Canceled
     }
 }
 
