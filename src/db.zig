@@ -15,6 +15,7 @@ pub const ConnManager = struct {
     db: c.AdbcDatabase,
     conn: c.AdbcConnection,
     err: c.AdbcError,
+    rows_affected: i64 = 0,
     // NOTE: Default row limit is 10 buffers of 1024 rows
     row_limit: ?u64 = 10_240,
 
@@ -146,7 +147,7 @@ pub fn executeStatementWithCancel(
     posix.sigaction(
         posix.SIG.INT,
         &posix.Sigaction {
-            .handler = .{ .handler = std.posix.SIG.DFL },
+            .handler = .{ .handler = posix.SIG.DFL },
             .mask = std.mem.zeroes(posix.sigset_t),
             .flags = 0
         },
@@ -169,7 +170,12 @@ fn executeStatement(
     stmt: *c.AdbcStatement,
     stream: *c.ArrowArrayStream
 ) !void {
-    try checkAdbc(c.AdbcStatementExecuteQuery(stmt, stream, null, &mgr.err));
+    try checkAdbc(c.AdbcStatementExecuteQuery(
+        stmt,
+        stream,
+        &mgr.rows_affected,
+        &mgr.err
+    ));
 }
 
 /// If SIGINT is received, set the global `cancelExecution` atomic to true
