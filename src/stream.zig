@@ -77,6 +77,13 @@ pub const ArrowStreamBuffer = struct {
     }
 
     pub fn deinit(self: *Self, alloc: Allocator) void {
+        if (self.schema.release) |release| release(&self.schema);
+
+        for (0..self.filled) |i| {
+            var batch = self.items[i];
+            if (batch.release) |release| release(&batch);
+        }
+
         alloc.free(self.items);
 
         if (self.metadata != null) alloc.free(self.metadata.?);
@@ -399,11 +406,8 @@ pub fn readStream(
     const getNext = stream.get_next orelse return error.AdbcLibError;
 
     try checkAdbcStream(getSchema(stream, &buffer.schema));
-    //defer { if (&buffer.schema.release) |release| release(&buffer.schema); }
 
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    //defer { if (batch.release) |release| release(&batch); }
-
     while (getNext(stream, &batch) == 0) {
         if (batch.release == null) break;
 
