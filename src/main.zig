@@ -1,19 +1,28 @@
 const std = @import("std");
-const posix = std.posix;
-const SIG = posix.SIG;
-const time = std.time;
-const root = @import("sql_cli");
+const config = @import("config");
+
+const cli = @import("cli.zig");
+const db = @import("db.zig");
+const errors = @import("errors.zig");
+const format = @import("format.zig");
+const input = @import("input.zig");
+const stream = @import("stream.zig");
 const pager = @import("pager.zig");
+const perfd = @import("perf.zig");
+
+// Library version - is there a better way to do this?
+const VERSION = "0.0.0";
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const posix = std.posix;
 
 
 const StartupParams = struct {
     driver: ?[]const u8,
     pager: ?pager.PagerType,
     winsize: ?posix.winsize,
-    errors: ?*root.errors.ErrorSingleton
+    errors: ?*errors.ErrorSingleton
 };
 
 
@@ -22,7 +31,7 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
     try writer.print("Squint {s} | ADBC CLI\n"
         ++ "Type \".help\" for dotcommands. "
-        ++ "Type \".exit\" or ^D to quit.\n", .{root.VERSION});
+        ++ "Type \".exit\" or ^D to quit.\n", .{VERSION});
 
     if (parms.driver) |d| {
         try writer.print("Driver \"{s}\"\n", .{d});
@@ -44,16 +53,16 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
         const n_err = parms.errors.?.numErrs();
 
         if (n_err > 0) {
-            try writer.print("\n{s}Startup Errors ({d}):\n", .{root.format.RED, n_err});
+            try writer.print("\n{s}Startup Errors ({d}):\n", .{format.RED, n_err});
             try parms.errors.?.printAllErrs(writer);
-            try writer.print("{s}", .{root.format.RESET});
+            try writer.print("{s}", .{format.RESET});
         }
     }
 
 }
 
 /// Get the output handle window size
-fn windowSize(handle: Io.File.Handle, errs: *root.errors.ErrorSingleton) posix.winsize {
+fn windowSize(handle: Io.File.Handle, errs: *errors.ErrorSingleton) posix.winsize {
     var winsize: posix.winsize = .{
         .row = 0,
         .col = 0,
@@ -61,7 +70,10 @@ fn windowSize(handle: Io.File.Handle, errs: *root.errors.ErrorSingleton) posix.w
         .ypixel = 0
     };
 
-    const err = posix.system.ioctl(handle, posix.T.IOCGWINSZ, @intFromPtr(&winsize));
+    const err = posix.system.ioctl(
+        handle,
+        posix.T.IOCGWINSZ,
+        @intFromPtr(&winsize));
 
     if (posix.errno(err) != .SUCCESS) {
         errs.addErr("Ioctl winsize unknown.");
@@ -79,16 +91,16 @@ pub fn main(init: std.process.Init) !void {
 
     const io = threaded.io();
 
-    var errs: root.errors.ErrorSingleton = try .init(gpa, 16);
+    var errs: errors.ErrorSingleton = try .init(gpa, 16);
     defer errs.deinit(gpa);
 
-    var argp: root.cli.SimpleArgParser = .{};
+    var argp: cli.SimpleArgParser = .{};
     defer argp.vargs.deinit(gpa);
 
     argp.parse(gpa, init.minimal.args) catch |err| {
         switch (err) {
             error.UnsupportedDriverError => {
-                root.cli.help();
+                cli.help();
 
                 return error.FatalStartupError;
             },
@@ -99,16 +111,16 @@ pub fn main(init: std.process.Init) !void {
     const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
     const arg_uri: []const u8 = argp.vargs.get("uri") orelse ":memory:";
 
-    var cfg: root.config.Config = undefined;
+    var cfg: config.Config = undefined;
     if (argp.vargs.get("profile")) |profile| {
         // Use arena allocator for profile config parsing
-        cfg = try root.config.readProfile(io,
+        cfg = try config.readProfile(io,
             init.arena.child_allocator,
             init.environ_map,
             arg_driver,
             profile);
     } else {
-        cfg = try root.config.simpleConfig(arg_driver, arg_uri);
+        cfg = try config.simpleConfig(arg_driver, arg_uri);
     }
 
     var stderr = Io.File.stderr();
@@ -121,22 +133,10 @@ pub fn main(init: std.process.Init) !void {
 
     const page_exec = pager.whichPager(io, init.environ_map);
 
-    // Set a signal handler for SIGINT received while in readline mode. This
-    // will capture the signal and handle it in a different way instead of
-    // exiting. Instead ctrl-d will exit the repl.
-    //posix.sigaction(
-    //    SIG.INT,
-    //    &posix.Sigaction {
-    //        .handler = .{ .handler = root.rlSigIntHandler },
-    //        .mask = std.mem.zeroes(posix.sigset_t),
-    //        .flags = 0
-    //    },
-    //    null);
-
-    var conn: root.db.ConnManager = root.db.ConnManager.init();
+    var conn: db.ConnManager = .init();
     defer _ = conn.deinit() catch {};
 
-    root.db.connectDriver(gpa, &conn, cfg) catch {
+    db.connectDriver(gpa, &conn, cfg) catch {
         errs.addErr(conn.lastErrMsg());
     };
 
@@ -153,7 +153,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     while (true) {
-        const query = root.input.readline("> ");
+        const query = input.readline("> ");
 
         // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
         // then reset and continue. Otherwise exit the main loop.
@@ -170,11 +170,11 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        _ = root.input.addHistory(query);
+        _ = input.addHistory(query);
 
         // Dot commands are meta commands for interacting with the session.
         if (query[0] == '.') {
-            root.input.dotCommand(std.mem.span(query), .{
+            input.dotCommand(std.mem.span(query), .{
                 .errors = &errs,
                 .conn = &conn,
                 .writer = &stderrw.interface
@@ -186,9 +186,9 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Basic performance monitoring
-        var perf: root.perf.PerfData = .init(io);
+        var perf: perfd.PerfData = .init(io);
 
-        var stmt = root.db.prepareStatement(&conn, std.mem.span(query)) catch {
+        var stmt = db.prepareStatement(&conn, std.mem.span(query)) catch {
             errs.addErr(conn.lastErrMsg());
             try errs.printLastErr(&stderrw.interface);
             continue;
@@ -196,7 +196,7 @@ pub fn main(init: std.process.Init) !void {
 
         perf.prep = perf.lap(io);
 
-        var strm = root.db.executeStatementWithCancel(io, &conn, &stmt) catch |err| {
+        var strm = db.executeStatementWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {
                 error.Canceled => errs.addErr("Execution canceled."),
                 else => errs.addErr(conn.lastErrMsg())
@@ -217,17 +217,17 @@ pub fn main(init: std.process.Init) !void {
         // have a noticeable impact on performance. It's more so a quality of
         // life behavior to avoid accidentally dumping millions of rows to the
         // user's stdout.
-        var res: root.stream.ArrowStreamBuffer = undefined;
+        var res: stream.ArrowStreamBuffer = undefined;
         if (conn.row_limit == null) {
             // Unlimited with 64 initial buffers (65,536 row initial cap)
-            res = try root.stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+            res = try stream.ArrowStreamBuffer.initBuffers(gpa, 64);
         } else {
             // Fixed limit bufers based on user-defined input
             res = try .initRows(gpa, conn.row_limit.?);
         }
         defer res.deinit(gpa);
 
-        root.stream.readStream(gpa, &strm, &res) catch |err| {
+        stream.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
                 error.AdbcStreamError => {
                     if (strm.get_last_error) |callable| {
@@ -249,9 +249,9 @@ pub fn main(init: std.process.Init) !void {
 
         perf.load = perf.lap(io);
 
-        res.metadata = try root.stream.calcColumnMetadata(io, gpa, &res);
+        res.metadata = try stream.calcColumnMetadata(io, gpa, &res);
         perf.rows = res.countRows();
-        perf.bufsz = root.format.calcResultBufSize(res.metadata.?, perf.rows);
+        perf.bufsz = format.calcResultBufSize(res.metadata.?, perf.rows);
 
         perf.proc = perf.lap(io);
 
@@ -262,17 +262,17 @@ pub fn main(init: std.process.Init) !void {
         // calculating the required buffer size ahead of time, instead of
         // dynamically allocating to build the string at print time, we save
         // a substantial amount of time rendering.
-        try root.format.printStreamBuffer(&prntbuf, &res);
+        try format.printStreamBuffer(&prntbuf, &res);
 
         perf.rend = perf.lap(io);
 
         try pager.page(io, page_exec, prntbuf);
 
         // Diagnostics
-        root.format.printPerfData(gpa, perf);
+        format.printPerfData(gpa, perf);
 
         if (strm.release) |release| release(&strm);
-        try root.db.releaseStatement(&conn, &stmt);
+        try db.releaseStatement(&conn, &stmt);
 
         std.c.free(query);
     }
