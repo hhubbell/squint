@@ -153,7 +153,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     while (true) {
-        const query = root.rlReadline("> ");
+        const query = root.input.readline("> ");
 
         // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
         // then reset and continue. Otherwise exit the main loop.
@@ -170,11 +170,11 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        _ = root.rlAddHistory(query);
+        _ = root.input.addHistory(query);
 
         // Dot commands are meta commands for interacting with the session.
         if (query[0] == '.') {
-            root.dotCommand(std.mem.span(query), .{
+            root.input.dotCommand(std.mem.span(query), .{
                 .errors = &errs,
                 .conn = &conn,
                 .writer = &stderrw.interface
@@ -207,8 +207,24 @@ pub fn main(init: std.process.Init) !void {
 
         perf.exec = perf.lap(io);
 
-        //var res = try root.stream.ArrowStreamBuffer.initRows(gpa, 100_000); // prod: 1024
-        var res = try root.stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+        // FIXME: This is just a basic implementation to test that the behavior
+        // is roughly working. We should rename these initializers, and perhaps
+        // move the initializer to a vtable-ish think on another struct, i.e.
+        // the ConnManager.
+        // Due to the behavior of the ArrowArray stream, any limit the user has
+        // set is actually rounded up to multiple of 1024. Because the limit is
+        // applied on the client side and not server side, this really doesn't
+        // have a noticeable impact on performance. It's more so a quality of
+        // life behavior to avoid accidentally dumping millions of rows to the
+        // user's stdout.
+        var res: root.stream.ArrowStreamBuffer = undefined;
+        if (conn.row_limit == null) {
+            // Unlimited with 64 initial buffers (65,536 row initial cap)
+            res = try root.stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+        } else {
+            // Fixed limit bufers based on user-defined input
+            res = try .initRows(gpa, conn.row_limit.?);
+        }
         defer res.deinit(gpa);
 
         root.stream.readStream(gpa, &strm, &res) catch |err| {

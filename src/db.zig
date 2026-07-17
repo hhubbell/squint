@@ -15,6 +15,8 @@ pub const ConnManager = struct {
     db: c.AdbcDatabase,
     conn: c.AdbcConnection,
     err: c.AdbcError,
+    // NOTE: Default row limit is 10 buffers of 1024 rows
+    row_limit: ?u64 = 10_240,
 
     pub fn init() Self {
         return .{

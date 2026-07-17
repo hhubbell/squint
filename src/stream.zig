@@ -30,14 +30,22 @@ pub const ArrowStreamBuffer = struct {
     items: []c.ArrowArray,
     err: c.ArrowError,
     filled: u64,
+    fixed: bool,
     metadata: ?[]ColMetadata = null,
 
     /// Initialize an ArrowStreamBuffer container based on a row count ceiling
-    /// capacity. This buffer will be resized if the stream yields more than
+    /// capacity. This buffer will NOT be resized if the stream yields more than
     /// the initialized buffers can hold.
+    ///
+    /// The following is INCORRECT:
     /// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. Given
     /// an initial capacity row value, the number of buffers initialized is the
     /// ceiling of that value divided by 1024.
+    ///
+    /// This assumption was true for SQLite but not DuckDB. Other database
+    /// drivers are unknown. This is not a dealbreaker, but we need to make the
+    /// behavior of this consistent. E.g. can we set the driver page size? And
+    /// should we refer to the limit in terms of pages?
     pub fn initRows(alloc: Allocator, capacity: u64) !Self {
         // We assume that an ArrowArrayStream batch is 1024 rows. Based on the
         // number of rows we wish to consume (`until`), calculate the max number
@@ -50,12 +58,13 @@ pub const ArrowStreamBuffer = struct {
             .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
             .items = batch_buf,
             .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0};
+            .filled = 0,
+            .fixed = true};
     }
 
-    /// Initialize an ArrowStreamBuffer container using a set number of buffers.
-    /// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. This
-    /// initializer is slightly more simple than initRows.
+    /// Initialize an ArrowStreamBuffer container using a set number of buffers
+    /// the can be resized. This initializer is slightly more simple than
+    /// initRows.
     pub fn initBuffers(alloc: Allocator, capacity: u64) !Self {
         const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, capacity);
 
@@ -63,7 +72,8 @@ pub const ArrowStreamBuffer = struct {
             .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
             .items = batch_buf,
             .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0};
+            .filled = 0,
+            .fixed = false};
     }
 
     pub fn deinit(self: *Self, alloc: Allocator) void {
@@ -76,6 +86,10 @@ pub const ArrowStreamBuffer = struct {
         self.items[self.filled] = batch;
 
         self.filled += 1;
+    }
+
+    pub fn canResize(self: *Self) bool {
+        return !self.fixed;
     }
 
     pub fn countBatchRows(self: *Self, i: usize) u64 {
@@ -104,13 +118,6 @@ pub const ArrowStreamBuffer = struct {
     pub fn resize(self: *Self, alloc: Allocator) !void {
         const bufsize = self.items.len + Self.buf_growth;
         self.items = try alloc.realloc(self.items, bufsize);
-    }
-
-    pub fn shrinkToFit(self: *Self, alloc: Allocator) void {
-        // FIXME: Error handling?
-        const res = alloc.resize(self.items, self.filled);
-
-        std.debug.print("{any}", .{res});
     }
 };
 
@@ -401,6 +408,9 @@ pub fn readStream(
         if (batch.release == null) break;
 
         if (!buffer.hasCapacity()) {
+            if (!buffer.canResize()) {
+                break;
+            }
             try buffer.resize(alloc);
         }
 
