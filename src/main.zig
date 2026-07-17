@@ -152,6 +152,8 @@ pub fn main(init: std.process.Init) !void {
         return error.FatalStartupError;
     }
 
+    input.setCompletionCallback(input.sqlCompletionCallback);
+
     while (true) {
         const query = input.readline("> ");
 
