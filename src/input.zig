@@ -213,12 +213,13 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
 
         // Enumerate dotcommands
         if (letter == '.') {
-            const dots = iterDotCommands();
+            const dots = comptime iterDotCommands();
             var indexes: [dots.len]usize = undefined;
             const idx = matchFromPrefix(inpt_ctx.input.rhs, &dots, &indexes);
 
             for (0..idx) |i| {
-                c.linenoiseAddCompletion(compl, @ptrCast(dots[i]));
+                const dc = dots[indexes[i]];
+                c.linenoiseAddCompletion(compl, @ptrCast(dc));
             }
         } else {
             inline for (std.enums.values(StatementType)) |t| {
