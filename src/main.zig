@@ -152,7 +152,7 @@ pub fn main(init: std.process.Init) !void {
         return error.FatalStartupError;
     }
 
-    input.setCompletionCallback(input.sqlCompletionCallback);
+    input.setCompletionCallback(input.completionCallback);
 
     while (true) {
         const query = input.readline("> ");
