@@ -455,20 +455,6 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
     try consumer.await(io);
     try grp.await(io);
 
-    //for (0..buffer.filled) |i| {
-    //    for (0..cols) |j| {
-    //        std.debug.print("{d} {d} {d} {d}\n", .{result.len, i, j, cols});
-    //        std.debug.print("{d} {d} {d}\n", .{
-    //            result[0], 0, 0});
-    //            //result[i * cols + j].bytes,
-    //            //result[i * cols + j].color_slots});
-
-    //        //header[j].width = @max(header[j].width, result[i * cols + j].width);
-    //        //header[j].bytes = @max(header[j].bytes, result[i * cols + j].bytes);
-    //        //header[j].color_slots += result[i * cols + j].color_slots;
-    //    }
-    //}
-
     return header;
 }
 

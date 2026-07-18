@@ -4,6 +4,7 @@ const c = @import("c");
 const errors = @import("errors.zig");
 const db = @import("db.zig");
 
+const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const TokenIter = std.mem.SplitIterator(u8, .scalar);
 
@@ -120,9 +121,50 @@ fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     opts.conn.row_limit = null;
 }
 
-// Register SQL keyword completions
+/// Register SQL keyword completions
+///
+/// Requires but hides allocation, due to function signature requirements.
 pub fn sqlCompletionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c) void {
-    if (buf[0] == 's') {
-        c.linenoiseAddCompletion(compl, "select");
+    const gpa: Allocator = std.heap.c_allocator;
+
+    //var ctx: std.ArrayList([]const u8) = .empty;
+    //defer ctx.deinit(gpa);
+    //defer for (ctx.items) |i| gpa.free(i);
+
+    //var iter = std.mem.splitScalar(u8, std.mem.span(buf), ' ');
+    //var word = iter.first();
+
+    //while (iter.next()) |term| {
+    //    ctx.append(gpa, word) catch return;
+    //    word = term;
+    //}
+
+    //const preamble = std.mem.join(gpa, " ", ctx.items) catch return;
+    //defer gpa.free(preamble);
+
+    const idx: ?usize = std.mem.findScalarLast(u8, std.mem.span(buf), ' ');
+
+    var preamble: []const u8 = undefined;
+    var letter: u8 = undefined;
+
+    if (idx != null) {
+        preamble = buf[0..idx.? + 1];
+        letter = buf[idx.? + 1];
+    } else {
+        preamble = "";
+        letter = buf[0];
+    }
+
+    if (letter == 's') {
+        const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
+            u8,
+            &.{
+                preamble,
+                "select"
+            },
+            '\x00'
+        ) catch return;
+        defer gpa.free(req);
+        c.linenoiseAddCompletion(compl, @ptrCast(req));
     }
 }
