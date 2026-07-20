@@ -1,5 +1,8 @@
 const std = @import("std");
 const config = @import("config");
+
+const version = @import("build_options").version;
+
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args;
 
@@ -55,6 +58,10 @@ pub const SimpleArgParser = struct {
         if (driver == null or isHelp(driver.?)) {
             help();
             std.process.exit(0);
+        } else if (isVersion(driver.?)) {
+            // FIXME: Use io.Writer instead of std.debug but whatever
+            std.debug.print("{f}\n", .{version});
+            std.process.exit(0);
         } else if (isLongArg(driver.?) or isShortArg(driver.?)) {
             // FIXME: Use io.Writer instead of std.debug but whatever
             std.debug.print("Incorrect program invocation.\n\n", .{});
@@ -97,13 +104,18 @@ fn isHelp(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
 }
 
+fn isVersion(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version");
+}
+
 pub fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
-    std.debug.print("squint [DRIVER] [ARGS]\n"
-        ++ "  driver\tAny driver supported by adbc_driver_manager\n"
-        ++ "  --uri\t\tDatabase connection string parameters\n\n"
-        ++ "  --profile\tConnection profile config name\n\n",
-        .{});
+    std.debug.print("squint {f}\n\n"
+        ++ "Usage: squint [DRIVER] [ARGS]\n\n"
+        ++ "  driver\tAny driver supported by adbc_driver_manager\n\n"
+        ++ "  --uri\t\tDatabase connection string parameters\n"
+        ++ "  --profile\tConnection profile config name\n",
+        .{version});
 }
 
 fn isLongArg(arg: []const u8) bool {

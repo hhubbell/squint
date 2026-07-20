@@ -1,0 +1,82 @@
+# Squint
+
+Look at the data. Look at it!
+
+Squint is a simple CLI for executing SQL queries using [Arrow Database
+Connectivity (ADBC)](https://arrow.apache.org/adbc/current/index.html).
+
+1. [Motivation](#motivation)
+2. [Usage](#usage)
+3. [Drivers](#drivers)
+4. [To Do](#to-do)
+
+## Motivation
+
+The motivation behind squint was to develop a small SQL CLI as an educational
+exercise. Along the way, I also wanted to address some mild annoyances I had
+with existing vendor-specific alternatives. I'm not sure squint is
+better, even marginally, but what defines marginally better anyway? 
+
+- Paging Results: Squint sends large result sets through a pager. Paging
+  large results is a nice UI when you accidentally return a massively long
+  or wide result set. This behavior is inspired by [psql](https://www.postgresql.org/docs/current/app-psql.html)
+- Cancellation: Specifically, being able to cancel execution without killing
+  the session.
+- Tab-Completion: Provide both keyword completion and database object
+  completion, with some context awareness to help suggest a meaningful
+  completion.
+
+Squint aims to be relatively cross-platform. However, this application uses
+POSIX signals, and so only supports systems that provide this facility. As a
+result, Windows is supported through [WSL](https://learn.microsoft.com/en-us/windows/wsl/),
+but not natively. It is unlikely that Windows will be supported natively.
+
+## Usage
+
+```bash
+squint 0.0.0-dev.0
+
+Usage: squint [DRIVER] [ARGS]
+
+  driver	Any driver supported by adbc_driver_manager
+
+  --uri		Database connection string parameters
+  --profile	Connection profile config name
+```
+
+## Drivers
+
+Squint uses ADBC. [ADBC is a columnar, minimal-overhead alternative to JDBC/ODBC for analytical applications.](https://arrow.apache.org/blog/2023/01/05/introducing-arrow-adbc/).
+ADBC was selected over JDBC/ODBC specifically because squint targets
+exploratory analytic workflows. ADBC is a relatively new technology, and new
+technology is *always cool*. Because squint is cool, it has to use ADBC.
+
+A positive side effect of using ADBC is that squint supports a large number of
+database vendors automatically. You just need to [install a driver](https://adbc-drivers.org/).
+
+Squint does not bundle any drivers. The easiest way to install a driver is
+using [`dbc`](https://columnar.tech/dbc), but you can also
+[compile your own](https://arrow.apache.org/adbc/main/driver/installation.html).
+
+
+## To Do
+
+Squint is far from perfect. Here are some things that need to be addressed to
+get there.
+
+- Set a consistent row limit for all drivers. Currently this behavior is
+  driver-specific, based on how the driver batches row sets.
+- Consistent concurrency for processing batches. Currently, when processing
+  result sets, squint will create N concurrent processes based on the number
+  of batches. Ideally, we are more conservative with this.
+- Data type presentation. Not all data types are confirmed to be displaying
+  correctly - e.g. `DATETIME`.
+- Truncate wide columns. Do something like `|Really long res...|` instead of
+  printing the whole column. This should be configurable.
+- At the 11th hour, while writing this README, I learned about [ADBC connection
+  profiles](https://arrow.apache.org/adbc/current/format/connection_profiles.html).
+  Squint implements its own concept of a connection profile, but uses JSON
+  instead of TOML. JSON was chosen because Zig has a JSON parser in stdlib, and
+  this project aims to limit the number of dependencies it requires. Regardless,
+  this squint module appears to reproduce functionality that exists out of the
+  box in the ADBC library. It should probably be revisited.

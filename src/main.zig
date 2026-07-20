@@ -10,8 +10,7 @@ const stream = @import("stream.zig");
 const pager = @import("pager.zig");
 const perfd = @import("perf.zig");
 
-// Library version - is there a better way to do this?
-const VERSION = "0.0.0";
+const version = @import("build_options").version;
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -29,9 +28,9 @@ const StartupParams = struct {
 /// Print startup information
 fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
-    try writer.print("Squint {s} | ADBC CLI\n"
+    try writer.print("Squint {f} | ADBC CLI\n"
         ++ "Type \".help\" for dotcommands. "
-        ++ "Type \".exit\" or ^D to quit.\n", .{VERSION});
+        ++ "Type \".exit\" or ^D to quit.\n", .{version});
 
     if (parms.driver) |d| {
         try writer.print("Driver \"{s}\"\n", .{d});

@@ -1,4 +1,5 @@
 const std = @import("std");
+const buildzon = @import("build.zig.zon");
 const Translator = @import("translate_c").Translator;
 
 pub fn build(b: *std.Build) void {
@@ -130,13 +131,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize
     });
 
+    const options = b.addOptions();
+    options.addOption(
+        std.SemanticVersion,
+        "version",
+        std.SemanticVersion.parse(buildzon.version) catch @panic("Could not parse build.zig.zon.version")
+    );
+
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "c", .module = t.mod },
-            .{ .name = "config", .module = config }
+            .{ .name = "config", .module = config },
+            .{ .name = "build_options", .module = options.createModule() }
         },
     });
     mod.linkLibrary(driver_mgr);
