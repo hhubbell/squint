@@ -5,10 +5,33 @@ Look at the data. Look at it!
 Squint is a simple CLI for executing SQL queries using [Arrow Database
 Connectivity (ADBC)](https://arrow.apache.org/adbc/current/index.html).
 
-1. [Motivation](#motivation)
-2. [Usage](#usage)
-3. [Drivers](#drivers)
-4. [To Do](#to-do)
+1. [Prerequisites](#prerequisites)
+2. [Dependencies](#dependencies)
+3. [Motivation](#motivation)
+4. [Usage](#usage)
+5. [Drivers](#drivers)
+6. [To Do](#to-do)
+
+## Prerequisites
+
+Squint is written in Zig, version 0.17. The development version which currently builds is 
+`0.17.0-dev.947+36069a2a7`. Squint has Arrow dependencies. Squint also depends
+on `linenoise` for reading user input. All dependencies are vendored.
+Therefore, building is as simple as cloning this repo and running:
+
+```bash
+zig build
+```
+
+## Dependencies
+
+Zig seeks to minimize the number of external dependencies it relies on. However,
+the following libraries are required. All dependencies are vendored in
+[`vendor/`](vendor/)
+
+- [`arrow-adbc`](https://github.com/apache/arrow-adbc)
+- [`arrow-nanoarrow`](https://github.com/apache/arrow-nanoarrow)
+- [`linenoise`](https://github.com/antirez/linenoise)
 
 ## Motivation
 
