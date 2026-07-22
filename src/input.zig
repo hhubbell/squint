@@ -1,7 +1,7 @@
 const std = @import("std");
 const c = @import("c");
 
-const errors = @import("errors.zig");
+const mesg = @import("message.zig");
 const db = @import("db.zig");
 
 const Allocator = std.mem.Allocator;
@@ -17,7 +17,7 @@ pub const addHistory = c.linenoiseHistoryAdd;
 pub const setCompletionCallback = c.linenoiseSetCompletionCallback;
 
 pub const DotCommandOptions = struct {
-    errors: *errors.ErrorSingleton,
+    msg: *mesg.MessageBuffer,
     conn: *db.ConnManager,
     writer: *Io.Writer
 };
@@ -52,7 +52,7 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
 pub fn dotCommand(cmd: []const u8, opts: DotCommandOptions) !void {
     var iter = std.mem.splitScalar(u8, cmd, ' ');
     const dotc = DotCommandMap.get(iter.first()) orelse {
-        opts.errors.addErr("Invalid dot command.");
+        opts.msg.addErr("Invalid dot command.");
         return error.DotCommandError;
     };
 
@@ -76,7 +76,7 @@ fn iterDotCommands() [DotCommandMap.keys().len][]const u8 {
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    try opts.errors.printAllErrs(opts.writer);
+    try opts.msg.printAllErrs(opts.writer);
 }
 
 fn dcExit(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -117,7 +117,7 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     }
 
     opts.conn.row_limit = std.fmt.parseInt(u64, new.?, 10) catch {
-        opts.errors.addErr("Invalid limit.");
+        opts.msg.addErr("Invalid limit.");
         return error.DotCommandError;
     };
 }

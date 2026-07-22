@@ -3,7 +3,7 @@ const config = @import("config");
 
 const cli = @import("cli.zig");
 const db = @import("db.zig");
-const errors = @import("errors.zig");
+const mesg = @import("message.zig");
 const format = @import("format.zig");
 const input = @import("input.zig");
 const stream = @import("stream.zig");
@@ -21,7 +21,7 @@ const StartupParams = struct {
     driver: ?[]const u8,
     pager: ?pager.PagerType,
     winsize: ?posix.winsize,
-    errors: ?*errors.ErrorSingleton
+    mesg: ?*mesg.MessageBuffer
 };
 
 
@@ -48,12 +48,12 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
     // If we encountered any non-fatal errors during startup, print them
     // all now.
-    if (parms.errors != null) {
-        const n_err = parms.errors.?.numErrs();
+    if (parms.mesg != null) {
+        const n_err = parms.mesg.?.numErrs();
 
         if (n_err > 0) {
             try writer.print("\n{s}Startup Errors ({d}):\n", .{format.RED, n_err});
-            try parms.errors.?.printAllErrs(writer);
+            try parms.mesg.?.printAllErrs(writer);
             try writer.print("{s}", .{format.RESET});
         }
     }
@@ -61,7 +61,7 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 }
 
 /// Get the output handle window size
-fn windowSize(handle: Io.File.Handle, errs: *errors.ErrorSingleton) posix.winsize {
+fn windowSize(handle: Io.File.Handle, msg: *mesg.MessageBuffer) posix.winsize {
     var winsize: posix.winsize = .{
         .row = 0,
         .col = 0,
@@ -75,7 +75,7 @@ fn windowSize(handle: Io.File.Handle, errs: *errors.ErrorSingleton) posix.winsiz
         @intFromPtr(&winsize));
 
     if (posix.errno(err) != .SUCCESS) {
-        errs.addErr("Ioctl winsize unknown.");
+        msg.addErr("Ioctl winsize unknown.");
     }
 
     return winsize;
@@ -90,8 +90,8 @@ pub fn main(init: std.process.Init) !void {
 
     const io = threaded.io();
 
-    var errs: errors.ErrorSingleton = try .init(gpa, 16);
-    defer errs.deinit(gpa);
+    var msg: mesg.MessageBuffer = try .init(gpa, 16);
+    defer msg.deinit(gpa);
 
     var argp: cli.SimpleArgParser = .{};
     defer argp.vargs.deinit(gpa);
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
 
                 return error.FatalStartupError;
             },
-            else => errs.addErr("Unexpected argument parsing error.")
+            else => msg.addErr("Unexpected argument parsing error.")
         }
     };
 
@@ -128,7 +128,7 @@ pub fn main(init: std.process.Init) !void {
     // TODO:
     //  We can use window size information to apply some formatting rules to
     //  the output. But this is not currently something we do anything with.
-    const winsize = windowSize(Io.File.stdout().handle, &errs);
+    const winsize = windowSize(Io.File.stdout().handle, &msg);
 
     const page_exec = pager.whichPager(io, init.environ_map);
 
@@ -136,18 +136,18 @@ pub fn main(init: std.process.Init) !void {
     defer _ = conn.deinit() catch {};
 
     db.connectDriver(gpa, &conn, cfg) catch {
-        errs.addErr(conn.lastErrMsg());
+        msg.addErr(conn.lastErrMsg());
     };
 
     try startupMessage(&stderrw.interface, .{
         .driver = arg_driver,
         .pager = page_exec,
         .winsize = winsize,
-        .errors = &errs
+        .mesg= &msg
     });
 
     // If we encountered a fatal error during startup, just abort from here
-    if (errs.fatal) {
+    if (msg.numFatal() > 0) {
         return error.FatalStartupError;
     }
 
@@ -176,11 +176,11 @@ pub fn main(init: std.process.Init) !void {
         // Dot commands are meta commands for interacting with the session.
         if (query[0] == '.') {
             input.dotCommand(std.mem.span(query), .{
-                .errors = &errs,
+                .msg = &msg,
                 .conn = &conn,
                 .writer = &stderrw.interface
             }) catch {
-                try errs.printLastErr(&stderrw.interface);
+                try msg.printLastErr(&stderrw.interface);
             };
 
             continue;
@@ -190,8 +190,8 @@ pub fn main(init: std.process.Init) !void {
         var perf: perfd.PerfData = .init(io);
 
         var stmt = db.prepareStatement(&conn, std.mem.span(query)) catch {
-            errs.addErr(conn.lastErrMsg());
-            try errs.printLastErr(&stderrw.interface);
+            msg.addErr(conn.lastErrMsg());
+            try msg.printLastErr(&stderrw.interface);
             continue;
         };
 
@@ -199,10 +199,10 @@ pub fn main(init: std.process.Init) !void {
 
         var strm = db.executeStatementWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {
-                error.Canceled => errs.addErr("Execution canceled."),
-                else => errs.addErr(conn.lastErrMsg())
+                error.Canceled => msg.addErr("Execution canceled."),
+                else => msg.addErr(conn.lastErrMsg())
             }
-            try errs.printLastErr(&stderrw.interface);
+            try msg.printLastErr(&stderrw.interface);
             continue;
         };
 
@@ -232,19 +232,19 @@ pub fn main(init: std.process.Init) !void {
             switch (err) {
                 error.AdbcStreamError => {
                     if (strm.get_last_error) |callable| {
-                        const msg: [*c]const u8 = callable(&strm);
+                        const msg_txt: [*c]const u8 = callable(&strm);
 
-                        if (msg != null) {
-                            errs.addErr(std.mem.span(msg));
+                        if (msg_txt != null) {
+                            msg.addErr(std.mem.span(msg_txt));
                         }
                     }
                 },
-                error.AdbcNanoArrowError => errs.addErr(&res.err.message),
-                error.AdbcLibError => errs.addErr("ADBC Library Error."),
-                else => errs.addErr("Uncaught Error.")
+                error.AdbcNanoArrowError => msg.addErr(&res.err.message),
+                error.AdbcLibError => msg.addErr("ADBC Library Error."),
+                else => msg.addErr("Uncaught Error.")
             }
 
-            try errs.printLastErr(&stderrw.interface);
+            try msg.printLastErr(&stderrw.interface);
             continue;
         };
 
