@@ -1,7 +1,7 @@
 const std = @import("std");
 const c = @import("c");
 
-const date = @import("date.zig");
+const date = @import("date");
 const db = @import("db.zig");
 const format = @import("format.zig");
 
@@ -203,7 +203,7 @@ pub fn extractValue(
         c.NANOARROW_TYPE_DATE32 => {
             // Arrow DATE32: int32_t days since UNIX Epoch
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
-            const dt = date.fromEpochDays(val);
+            const dt = date.DateTime.fromEpochDays(val);
             return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
                 dt.year,
                 dt.month,

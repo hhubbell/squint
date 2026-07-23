@@ -1,6 +1,7 @@
 const std = @import("std");
 const time = std.time;
 const c = @import("c");
+const date = @import("date");
 
 const stream = @import("stream.zig");
 const perf = @import("perf.zig");
@@ -30,36 +31,6 @@ pub const Box = struct {
     pub const RBotCor: []const u8 = "\u{2518}";
 };
 
-
-/// Convert an unsigned integer representing a time delta in milliseconds to
-/// a character buffer which is at most 5 characters. Therefore, we have a
-/// small amount of room to deal with to render the display. For example, a
-/// performance point which takes 2500 milliseconds could be simplified to
-/// something like 2.5s
-pub fn toDisplayTime(ms: u64, buf: *[5]u8) void {
-
-    if (ms < 1000) {
-        _ = std.fmt.bufPrint(buf, "{d}ms", .{ms}) catch @memcpy(buf, "ERR!!");
-        return;
-    }
-
-    if (ms < 10000) {
-        const f_ms: f32 = @floatFromInt(ms);
-        const sec: f32 = f_ms / 1000.0;
-        _ = std.fmt.bufPrint(buf, "{d:.1}s", .{sec}) catch @memcpy(buf, "ERR!!");
-        return;
-    }
-
-    if (ms < 60000) {
-        const f_ms: f32 = @floatFromInt(ms);
-        const sec: f32 = f_ms / 1000.0;
-
-        _ = std.fmt.bufPrint(buf, "{d:.0}s", .{sec}) catch @memcpy(buf, "ERR!!");
-        return;
-    }
-
-    @memcpy(buf, "LONG!");
-}
 
 /// Determine the required buffer size for printing a stream result set
 pub fn calcResultBufSize(meta: []stream.ColMetadata, rows: u64) u64 {
@@ -318,11 +289,11 @@ pub fn printPerfData(writer: *Io.Writer, perfd: perf.PerfData) !void {
     var proc: [5]u8 = undefined;
     var rend: [5]u8 = undefined;
 
-    toDisplayTime(perfd.prep, &prep);
-    toDisplayTime(perfd.exec, &exec);
-    toDisplayTime(perfd.load, &load);
-    toDisplayTime(perfd.proc, &proc);
-    toDisplayTime(perfd.rend, &rend);
+    date.fmt.toDisplayTime(perfd.prep, &prep);
+    date.fmt.toDisplayTime(perfd.exec, &exec);
+    date.fmt.toDisplayTime(perfd.load, &load);
+    date.fmt.toDisplayTime(perfd.proc, &proc);
+    date.fmt.toDisplayTime(perfd.rend, &rend);
 
     try writer.print("{s} | prep: {s} exec: {s} load: {s} proc: {s} rend: {s}\n", .{
         row, prep, exec, load, proc, rend});

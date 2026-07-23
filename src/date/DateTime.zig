@@ -1,21 +1,20 @@
 const std = @import("std");
 const time = std.time;
 
+const Self = @This();
 
-pub const DateTime = struct {
-    year: u32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    millisecond: u8
-};
+year: u32,
+month: u8,
+day: u8,
+hour: u8,
+minute: u8,
+second: u8,
+millisecond: u8,
 
 
 /// Convert a DateTime into the number of days since the UNIX epoch. See
 /// https://howardhinnant.github.io/date_algorithms.html for more details
-pub fn toEpochDays(dt: DateTime) i64 {
+pub fn toEpochDays(dt: Self) i64 {
     const yr: u32 = dt.year - @intFromBool(dt.month <= 2);
     const mo: u32 = if (dt.month <= 2) dt.month + 9 else dt.month - 3;
 
@@ -58,7 +57,7 @@ test "toEpochDays" {
 /// Convert an int representing the number of days since the UNIX epoch to a
 /// DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
 /// for more details.
-pub fn fromEpochDays(d: i64) DateTime {
+pub fn fromEpochDays(d: i64) Self {
     const days: i64 = d + 719468;
 
     const era = @divFloor(days, 146097);
@@ -90,7 +89,7 @@ pub fn fromEpochDays(d: i64) DateTime {
 
 test "fromEpochDays" {
     try std.testing.expectEqual(
-        DateTime{
+        Self{
             .year=1970,
             .month=1,
             .day=1,
@@ -103,7 +102,7 @@ test "fromEpochDays" {
     );
 
     try std.testing.expectEqual(
-        DateTime{
+        Self{
             .year=2026,
             .month=1,
             .day=1,
@@ -117,5 +116,5 @@ test "fromEpochDays" {
 }
 
 test {
-    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(Self);
 }

@@ -131,6 +131,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize
     });
 
+    const date = b.createModule(.{
+        .root_source_file = b.path("src/date/root.zig"),
+        .target = target,
+        .optimize = optimize
+    });
+
     const options = b.addOptions();
     options.addOption(
         std.SemanticVersion,
@@ -145,6 +151,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "c", .module = t.mod },
             .{ .name = "config", .module = config },
+            .{ .name = "date", .module = date },
             .{ .name = "build_options", .module = options.createModule() }
         },
     });
