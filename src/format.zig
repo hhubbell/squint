@@ -6,6 +6,7 @@ const stream = @import("stream.zig");
 const perf = @import("perf.zig");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 
 const PAD: usize = 2;
@@ -307,11 +308,9 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
 }
 
 /// Print performance data
-pub fn printPerfData(alloc: Allocator, perfd: perf.PerfData) void {
-    _ = alloc;
-
+pub fn printPerfData(writer: *Io.Writer, perfd: perf.PerfData) !void {
     var buf: [55]u8 = undefined;
-    const row = std.fmt.bufPrint(&buf, "{d} rows / {d} bytes", .{perfd.rows, perfd.bufsz}) catch "ERROR!";
+    const row = try std.fmt.bufPrint(&buf, "{d} rows / {d} bytes", .{perfd.rows, perfd.bufsz});
 
     var prep: [5]u8 = undefined;
     var exec: [5]u8 = undefined;
@@ -325,7 +324,7 @@ pub fn printPerfData(alloc: Allocator, perfd: perf.PerfData) void {
     toDisplayTime(perfd.proc, &proc);
     toDisplayTime(perfd.rend, &rend);
 
-    std.debug.print("{s} | prep: {s} exec: {s} load: {s} proc: {s} rend: {s}\n", .{
+    try writer.print("{s} | prep: {s} exec: {s} load: {s} proc: {s} rend: {s}\n", .{
         row, prep, exec, load, proc, rend});
 }
 
@@ -334,8 +333,6 @@ fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {
     const until = i + value.len;
 
     @memcpy(buffer.*[i..until], value);
-
-    //std.debug.print("{s}\n", .{buffer.*});
 
     return value.len;
 }

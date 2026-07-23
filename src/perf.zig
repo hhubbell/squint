@@ -1,5 +1,7 @@
 const std = @import("std");
+
 const Io = std.Io;
+
 
 pub const PerfData = struct {
     const Self = @This();
@@ -23,7 +25,6 @@ pub const PerfData = struct {
         const delta: i64 = l.raw.toMilliseconds() - self.last_lap.raw.toMilliseconds();
 
         self.last_lap = l;
-
 
         // FIXME: If last_lap is ever AFTER current lap, this will crash. It
         // should never happen, but we're depending on the language to handle

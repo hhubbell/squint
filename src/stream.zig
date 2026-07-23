@@ -1,5 +1,7 @@
 const std = @import("std");
 const c = @import("c");
+
+const date = @import("date.zig");
 const db = @import("db.zig");
 const format = @import("format.zig");
 
@@ -198,7 +200,16 @@ pub fn extractValue(
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
         c.NANOARROW_TYPE_INT64,
-        c.NANOARROW_TYPE_DATE32,
+        c.NANOARROW_TYPE_DATE32 => {
+            // Arrow DATE32: int32_t days since UNIX Epoch
+            const val = c.ArrowArrayViewGetIntUnsafe(view, row);
+            const dt = date.fromEpochDays(val);
+            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                dt.year,
+                dt.month,
+                dt.day
+            }) catch "<err>";
+        },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
@@ -312,7 +323,10 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_INT32,
         c.NANOARROW_TYPE_INT64,
         c.NANOARROW_TYPE_DATE32,
-        c.NANOARROW_TYPE_DATE64,
+        c.NANOARROW_TYPE_DATE64 => {
+            // YYYY-MM-DD
+            return 10;
+        },
         c.NANOARROW_TYPE_TIMESTAMP => {
             const val: i64 = c.ArrowArrayViewGetIntUnsafe(col, row);
             const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
@@ -526,4 +540,8 @@ pub fn produceBatchMaximums(
             return error.Canceled;
         };
     }
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

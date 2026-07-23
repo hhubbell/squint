@@ -270,11 +270,15 @@ pub fn main(init: std.process.Init) !void {
         try pager.page(io, page_exec, prntbuf);
 
         // Diagnostics
-        format.printPerfData(gpa, perf);
+        try format.printPerfData(&stderrw.interface, perf);
 
         if (strm.release) |release| release(&strm);
         try db.releaseStatement(&conn, &stmt);
 
         std.c.free(query);
     }
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
