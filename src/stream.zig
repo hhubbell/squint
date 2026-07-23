@@ -204,16 +204,27 @@ pub fn extractValue(
             // Arrow DATE32: int32_t days since UNIX Epoch
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
             const dt = date.DateTime.fromEpochDays(val);
-            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-                dt.year,
-                dt.month,
-                dt.day
+            return std.fmt.bufPrint(buf,
+                "{d:0>4}-{d:0>2}-{d:0>2}", .{
+                    dt.year,
+                    dt.month,
+                    dt.day
             }) catch "<err>";
         },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
-            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
+            const dt = date.DateTime.fromEpochMs(val);
+            return std.fmt.bufPrint(buf,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
+                    dt.year,
+                    dt.month,
+                    dt.day,
+                    dt.hour,
+                    dt.minute,
+                    dt.second,
+                    dt.millisecond
+                }) catch "<err>";
         },
         c.NANOARROW_TYPE_UINT8,
         c.NANOARROW_TYPE_UINT16,
@@ -322,15 +333,14 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
         c.NANOARROW_TYPE_INT64,
-        c.NANOARROW_TYPE_DATE32,
-        c.NANOARROW_TYPE_DATE64 => {
+        c.NANOARROW_TYPE_DATE32 => {
             // YYYY-MM-DD
             return 10;
         },
+        c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
-            const val: i64 = c.ArrowArrayViewGetIntUnsafe(col, row);
-            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
-            return str.len;
+            // YYYY-MM-DDTHH:MM:SS.mmmZ
+            return 24;
         },
         c.NANOARROW_TYPE_UINT8,
         c.NANOARROW_TYPE_UINT16,
@@ -542,6 +552,3 @@ pub fn produceBatchMaximums(
     }
 }
 
-test {
-    std.testing.refAllDecls(@This());
-}

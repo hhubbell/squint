@@ -9,7 +9,7 @@ day: u8,
 hour: u8,
 minute: u8,
 second: u8,
-millisecond: u8,
+millisecond: u16,
 
 
 /// Convert a DateTime into the number of days since the UNIX epoch. See
@@ -115,6 +115,97 @@ test "fromEpochDays" {
     );
 }
 
-test {
-    std.testing.refAllDecls(Self);
+/// Convert a DateTime into the number of milliseconds since the UNIX epoch. See
+/// https://howardhinnant.github.io/date_algorithms.html for more details
+pub fn toEpochMs(dt: Self) i64 {
+    return toEpochDays(dt) * time.ms_per_day
+        + @as(i64, dt.hour) * time.ms_per_hour
+        + @as(i64, dt.minute) * time.ms_per_min
+        + @as(i64, dt.second) * time.ms_per_s
+        + @as(i64, dt.millisecond);
 }
+
+test "toEpochMs" {
+    try std.testing.expectEqual(
+        0,
+        toEpochMs(.{
+            .year=1970,
+            .month=1,
+            .day=1,
+            .hour=0,
+            .minute=0,
+            .second=0,
+            .millisecond=0
+        })
+    );
+
+    try std.testing.expectEqual(
+        1767266553456,
+        toEpochMs(.{
+            .year=2026,
+            .month=1,
+            .day=1,
+            .hour=11,
+            .minute=22,
+            .second=33,
+            .millisecond=456
+        })
+    );
+}
+
+/// Convert an int representing the number of milliseconds since the UNIX epoch
+/// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
+/// for more details.
+pub fn fromEpochMs(ms: i64) Self {
+    var rem = ms;
+
+    const days = @divFloor(ms, time.ms_per_day);
+    rem -= days * time.ms_per_day;
+
+    const hrs = @divTrunc(rem, time.ms_per_hour);
+    rem -= hrs * time.ms_per_hour;
+
+    const mins = @divTrunc(rem, time.ms_per_min);
+    rem -= mins * time.ms_per_min;
+
+    const secs = @divTrunc(rem, time.ms_per_s);
+    rem -= secs * time.ms_per_s;
+
+    var ymd = fromEpochDays(days);
+
+    ymd.hour = @intCast(hrs);
+    ymd.minute = @intCast(mins);
+    ymd.second = @intCast(secs);
+    ymd.millisecond = @intCast(rem);
+
+    return ymd;
+}
+
+test "fromEpochMs" {
+    try std.testing.expectEqual(
+        Self{
+            .year=1970,
+            .month=1,
+            .day=1,
+            .hour=0,
+            .minute=0,
+            .second=0,
+            .millisecond=0
+        },
+        fromEpochMs(0)
+    );
+
+    try std.testing.expectEqual(
+        Self{
+            .year=2026,
+            .month=1,
+            .day=1,
+            .hour=11,
+            .minute=22,
+            .second=33,
+            .millisecond=456
+        },
+        fromEpochMs(1767266553456)
+    );
+}
+
