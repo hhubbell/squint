@@ -10,7 +10,7 @@ Connectivity (ADBC)](https://arrow.apache.org/adbc/current/index.html).
 3. [Motivation](#motivation)
 4. [Usage](#usage)
 5. [Drivers](#drivers)
-6. [To Do](#to-do)
+6. [To Do/Known Issues](#to-do)
 
 ## Prerequisites
 
@@ -103,3 +103,9 @@ get there.
   this project aims to limit the number of dependencies it requires. Regardless,
   this squint module appears to reproduce functionality that exists out of the
   box in the ADBC library. It should probably be revisited.
+- **Bug**: There is a known issue when connecting to duckdb databases where
+  `DATE`, `DATETIME`, `TIMESTAMP`, and other time-related types are being
+  misclassified as `NANOARROW_TYPE_INT32`/`NANOARROW_TYPE_INT64` instead of
+  `DATE32`/`DATE64`. More research is needed to understand if this is an issue
+  with the interaction between the duckdb driver and nanoarrow, or with how the
+  driver is being initialized, or something else.

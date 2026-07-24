@@ -328,7 +328,7 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 
     var buf: [64]u8 = undefined;
 
-    std.debug.print("\n{d}\n", .{col.storage_type});
+    //std.debug.print("\n{d}\n", .{col.storage_type});
 
     switch (col.storage_type) {
         c.NANOARROW_TYPE_INT8,
