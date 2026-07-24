@@ -200,6 +200,13 @@ pub fn extractValue(
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
         c.NANOARROW_TYPE_INT64,
+        c.NANOARROW_TYPE_UINT8,
+        c.NANOARROW_TYPE_UINT16,
+        c.NANOARROW_TYPE_UINT32,
+        c.NANOARROW_TYPE_UINT64 => {
+            const val = c.ArrowArrayViewGetUIntUnsafe(view, row);
+            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
+        },
         c.NANOARROW_TYPE_DATE32 => {
             // Arrow DATE32: int32_t days since UNIX Epoch
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
@@ -225,13 +232,6 @@ pub fn extractValue(
                     dt.second,
                     dt.millisecond
                 }) catch "<err>";
-        },
-        c.NANOARROW_TYPE_UINT8,
-        c.NANOARROW_TYPE_UINT16,
-        c.NANOARROW_TYPE_UINT32,
-        c.NANOARROW_TYPE_UINT64 => {
-            const val = c.ArrowArrayViewGetUIntUnsafe(view, row);
-            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
         },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
@@ -328,11 +328,21 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 
     var buf: [64]u8 = undefined;
 
+    std.debug.print("\n{d}\n", .{col.storage_type});
+
     switch (col.storage_type) {
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
         c.NANOARROW_TYPE_INT64,
+        c.NANOARROW_TYPE_UINT8,
+        c.NANOARROW_TYPE_UINT16,
+        c.NANOARROW_TYPE_UINT32,
+        c.NANOARROW_TYPE_UINT64 => {
+            const val: u64 = c.ArrowArrayViewGetUIntUnsafe(col, row);
+            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            return str.len;
+        },
         c.NANOARROW_TYPE_DATE32 => {
             // YYYY-MM-DD
             return 10;
@@ -341,14 +351,6 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_TIMESTAMP => {
             // YYYY-MM-DDTHH:MM:SS.mmmZ
             return 24;
-        },
-        c.NANOARROW_TYPE_UINT8,
-        c.NANOARROW_TYPE_UINT16,
-        c.NANOARROW_TYPE_UINT32,
-        c.NANOARROW_TYPE_UINT64 => {
-            const val: u64 = c.ArrowArrayViewGetUIntUnsafe(col, row);
-            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
-            return str.len;
         },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
