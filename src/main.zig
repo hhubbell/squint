@@ -136,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = conn.deinit() catch {};
 
     db.connectDriver(gpa, &conn, cfg) catch {
-        msg.addErr(conn.lastErrMsg());
+        msg.addFatalErr(conn.lastErrMsg());
     };
 
     try startupMessage(&stderrw.interface, .{
