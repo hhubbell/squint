@@ -20,7 +20,9 @@ pub const ColMetadata = struct {
     // Decimal data
     decimal_width: ?i32,
     decimal_precision: ?i32,
-    decimal_scale: ?i32
+    decimal_scale: ?i32,
+    // Time data
+    time_unit: c.ArrowTimeUnit
 };
 
 
@@ -160,7 +162,7 @@ fn getHeader(
         try checkNanoArrow(c.ArrowSchemaViewInit(&view, col, err));
 
         // Store the decimal storage width if we are dealing with a DECIMAL
-        const dec_width: ?i32 = switch(view.storage_type) {
+        const dec_width: ?i32 = switch(view.type) {
             c.NANOARROW_TYPE_DECIMAL32 => 32,
             c.NANOARROW_TYPE_DECIMAL64 => 64,
             c.NANOARROW_TYPE_DECIMAL128 => 128,
@@ -176,7 +178,8 @@ fn getHeader(
             .typeof = view.type,
             .decimal_width = dec_width,
             .decimal_precision = view.decimal_precision,
-            .decimal_scale = view.decimal_scale};
+            .decimal_scale = view.decimal_scale,
+            .time_unit = view.time_unit};
     }
 
     return result;
@@ -195,7 +198,7 @@ pub fn extractValue(
         return "null";
     }
 
-    switch (view.storage_type) {
+    switch (meta.typeof) {
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
@@ -220,8 +223,16 @@ pub fn extractValue(
         },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
+            // Arrow DATE64/TIMESTAMP: int64_t units since UNIX Epoch
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
-            const dt = date.DateTime.fromEpochMs(val);
+            const dt: date.DateTime = switch (meta.time_unit) {
+                c.NANOARROW_TIME_UNIT_SECOND => .fromEpochSec(val),
+                c.NANOARROW_TIME_UNIT_MILLI => .fromEpochMs(val),
+                c.NANOARROW_TIME_UNIT_MICRO => .fromEpochMicro(val),
+                c.NANOARROW_TIME_UNIT_NANO => .fromEpochNano(val),
+                else => unreachable
+            };
+            
             return std.fmt.bufPrint(buf,
                 "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
                     dt.year,
@@ -295,6 +306,9 @@ pub fn isNull(col: *c.ArrowArrayView, idx: u64) bool {
 }
 
 /// Determine if an ArrowArray is numeric
+/// FIXME: Avoid using ArrowArrayView.storage_type in favor of the
+/// ArrowSchema.type instead. The storage_type may lose fidelity if
+/// the schema type is backed by a less descriptive type, e.g. DATE
 pub fn isNumeric(col: *c.ArrowArrayView) bool {
     switch (col.storage_type) {
         c.NANOARROW_TYPE_INT8,
@@ -328,9 +342,7 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 
     var buf: [64]u8 = undefined;
 
-    //std.debug.print("\n{d}\n", .{col.storage_type});
-
-    switch (col.storage_type) {
+    switch (meta.typeof) {
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,

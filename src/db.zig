@@ -54,8 +54,8 @@ pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: config.Config) !v
     defer alloc.free(c_drv);
 
     try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
-    try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
     try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", @ptrCast(c_drv), &mgr.err));
+    try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
 
     // We guarantee that at least uri is part of the config, so we do not need
     // to explicitly set this option. Instead we just iterate over every field

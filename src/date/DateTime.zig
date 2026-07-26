@@ -153,13 +153,66 @@ test "toEpochMs" {
     );
 }
 
+/// Convert an int representing the number of seconds since the UNIX epoch
+/// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
+/// for more details.
+pub fn fromEpochSec(sec: i64) Self {
+    var rem = sec;
+
+    const days = @divFloor(rem, time.s_per_day);
+    rem -= days * time.s_per_day;
+
+    const hrs = @divTrunc(rem, time.s_per_hour);
+    rem -= hrs * time.s_per_hour;
+
+    const mins = @divTrunc(rem, time.s_per_min);
+    rem -= mins * time.s_per_min;
+
+    var ymd = fromEpochDays(days);
+
+    ymd.hour = @intCast(hrs);
+    ymd.minute = @intCast(mins);
+    ymd.second = @intCast(rem);
+    ymd.millisecond = 0;
+
+    return ymd;
+}
+
+test "fromEpochSec" {
+    try std.testing.expectEqual(
+        Self{
+            .year=1970,
+            .month=1,
+            .day=1,
+            .hour=0,
+            .minute=0,
+            .second=0,
+            .millisecond=0
+        },
+        fromEpochSec(0)
+    );
+
+    try std.testing.expectEqual(
+        Self{
+            .year=2026,
+            .month=1,
+            .day=1,
+            .hour=11,
+            .minute=22,
+            .second=33,
+            .millisecond=0
+        },
+        fromEpochSec(1767266553)
+    );
+}
+
 /// Convert an int representing the number of milliseconds since the UNIX epoch
 /// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
 /// for more details.
 pub fn fromEpochMs(ms: i64) Self {
     var rem = ms;
 
-    const days = @divFloor(ms, time.ms_per_day);
+    const days = @divFloor(rem, time.ms_per_day);
     rem -= days * time.ms_per_day;
 
     const hrs = @divTrunc(rem, time.ms_per_hour);
@@ -209,3 +262,16 @@ test "fromEpochMs" {
     );
 }
 
+/// Convert an int representing the number of microseconds since the UNIX epoch
+/// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
+/// for more details.
+pub fn fromEpochMicro(us: i64) Self {
+    return fromEpochMs(@divFloor(us, 1000));
+}
+
+/// Convert an int representing the number of nanoseconds since the UNIX epoch
+/// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
+/// for more details.
+pub fn fromEpochNano(ns: i64) Self {
+    return fromEpochMs(@divFloor(ns, 1000000));
+}
