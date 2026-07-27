@@ -24,7 +24,6 @@ const StartupParams = struct {
     mesg: ?*mesg.MessageBuffer
 };
 
-
 /// Print startup information
 fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
@@ -107,20 +106,22 @@ pub fn main(init: std.process.Init) !void {
         }
     };
 
-    const arg_driver: []const u8 = argp.vargs.get("driver") orelse "sqlite";
-    const arg_uri: []const u8 = argp.vargs.get("uri") orelse ":memory:";
+    const cfg: db.AdbcConfig = .init(
+        argp.vargs.get("profile"),
+        argp.vargs.get("driver"),
+        argp.vargs.get("uri"));
 
-    var cfg: config.Config = undefined;
-    if (argp.vargs.get("profile")) |profile| {
-        // Use arena allocator for profile config parsing
-        cfg = try config.readProfile(io,
-            init.arena.child_allocator,
-            init.environ_map,
-            arg_driver,
-            profile);
-    } else {
-        cfg = try config.simpleConfig(arg_driver, arg_uri);
-    }
+    //var cfg: config.Config = undefined;
+    //if (argp.vargs.get("profile")) |profile| {
+    //    // Use arena allocator for profile config parsing
+    //    cfg = try config.readProfile(io,
+    //        init.arena.child_allocator,
+    //        init.environ_map,
+    //        arg_driver,
+    //        profile);
+    //} else {
+    //    cfg = try config.simpleConfig(arg_driver, arg_uri);
+    //}
 
     var stderr = Io.File.stderr();
     var stderrw = stderr.writer(io, &.{});
@@ -140,10 +141,10 @@ pub fn main(init: std.process.Init) !void {
     };
 
     try startupMessage(&stderrw.interface, .{
-        .driver = arg_driver,
+        .driver = cfg.driver orelse "profile",
         .pager = page_exec,
         .winsize = winsize,
-        .mesg= &msg
+        .mesg = &msg
     });
 
     // If we encountered a fatal error during startup, just abort from here

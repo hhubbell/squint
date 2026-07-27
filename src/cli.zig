@@ -32,7 +32,15 @@ pub const SimpleArgParser = struct {
         args: *Args.Iterator
     ) !void {
         const val: []const u8 = args.next() orelse "";
-        try self.vargs.put(alloc, key[2..], val);
+        const knm: []const u8 = key[2..];
+
+        if (std.mem.eql(u8, knm, "driver")) {
+            if (!config.AdbcDriverMap.has(val)) {
+                return error.UnsupportedDriverError;
+            }
+        }
+
+        try self.vargs.put(alloc, knm, val);
     }
 
     fn shortArg(
@@ -52,38 +60,15 @@ pub const SimpleArgParser = struct {
         // Skip program invocation arg
         _ = args.skip();
 
-        // The first argument of the cli should be the driver to use for
-        // the connection. If it isn't, then print help and exit.
-        const driver: ?[]const u8 = args.next();
-        if (driver == null or isHelp(driver.?)) {
-            help();
-            std.process.exit(0);
-        } else if (isVersion(driver.?)) {
-            // FIXME: Use io.Writer instead of std.debug but whatever
-            std.debug.print("{f}\n", .{version});
-            std.process.exit(0);
-        } else if (isLongArg(driver.?) or isShortArg(driver.?)) {
-            // FIXME: Use io.Writer instead of std.debug but whatever
-            std.debug.print("Incorrect program invocation.\n\n", .{});
-
-            help();
-            std.process.exit(0);
-        } else {
-            // NOTE: This is technically unnecessary but provides an earlier
-            // failure mode if an invald driver was passed to the application.
-            // The adbc spec defines a directory structure and toml config
-            // entry point. We can refer to drivers by name instead of by
-            // their static library
-            if (!config.AdbcDriverMap.has(driver.?)) {
-                return error.UnsupportedDriverError;
-            }
-
-            try self.vargs.put(alloc, "driver", driver.?);
-        }
-
         while (args.next()) |arg| {
             if (isHelp(arg)) {
                 help();
+                std.process.exit(0);
+            }
+
+            if (isVersion(arg)) {
+                // FIXME: Use io.Writer instead of std.debug but whatever
+                std.debug.print("{f}\n", .{version});
                 std.process.exit(0);
             }
 
@@ -112,7 +97,7 @@ pub fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
     std.debug.print("squint {f}\n\n"
         ++ "Usage: squint [DRIVER] [ARGS]\n\n"
-        ++ "  driver\tAny driver supported by adbc_driver_manager\n\n"
+        ++ "  --driver\tAny driver supported by adbc_driver_manager\n\n"
         ++ "  --uri\t\tDatabase connection string parameters\n"
         ++ "  --profile\tConnection profile config name\n",
         .{version});

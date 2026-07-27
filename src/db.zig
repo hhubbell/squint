@@ -8,6 +8,29 @@ const posix = std.posix;
 
 var cancelExecAtom = std.atomic.Value(bool).init(false);
 
+/// WARNING: The order of these fields matter. If driver/uri are set, then they
+/// can override whatever is in profile
+pub const AdbcConfig = struct {
+    profile: ?[]const u8,
+    driver: ?[]const u8,
+    uri: ?[]const u8,
+
+    /// This is kind of a weird API, but basically if `profile` is set, then
+    /// leave `driver` and `uri` null unless explicitly overridden. Otherwise,
+    /// set default values for `driver` and `uri` to open a :memory: sqlite
+    /// connection.
+    pub fn init(
+        profile: ?[]const u8,
+        driver: ?[]const u8,
+        uri: ?[]const u8
+    ) AdbcConfig {
+        return .{
+            .profile = profile,
+            .driver = if (driver == null and profile == null) "sqlite" else driver,
+            .uri = if (uri == null and profile == null) ":memory:" else uri
+        };
+    }
+};
 
 pub const ConnManager = struct {
     const Self = @This();
@@ -49,13 +72,23 @@ pub fn checkAdbc(rcode: c_int) !void {
     }
 }
 
-pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: config.Config) !void {
-    const c_drv: [:0]const u8 = try alloc.dupeSentinel(u8, cfg.driver, 0);
-    defer alloc.free(c_drv);
-
+pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: AdbcConfig) !void {
     try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
-    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, "driver", @ptrCast(c_drv), &mgr.err));
     try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
+
+    inline for (@typeInfo(@TypeOf(cfg)).@"struct".field_names) |f| {
+        const v = @field(cfg, f);
+
+        if (v != null) {
+            const c_f: [:0]const u8 = try alloc.dupeSentinel(u8, f, 0);
+            const c_v: [:0]const u8 = try alloc.dupeSentinel(u8, v.?, 0);
+
+            defer alloc.free(c_f);
+            defer alloc.free(c_v);
+
+            try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_f), @ptrCast(c_v), &mgr.err));
+        }
+    }
 
     // We guarantee that at least uri is part of the config, so we do not need
     // to explicitly set this option. Instead we just iterate over every field
@@ -66,22 +99,22 @@ pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: config.Config) !v
     // add additional things but IDK what that would be. It doesn't matter
     // because we just iterate over the struct. This comment is kind of
     // pointless, but I think I'll need to remember this someday.
-    const cfg_iter = try cfg.iterFields(alloc);
-    defer alloc.free(cfg_iter);
+    //const cfg_iter = try cfg.iterFields(alloc);
+    //defer alloc.free(cfg_iter);
 
-    for (cfg_iter) |kv| {
-        if (kv.val == null) {
-            continue;
-        }
+    //for (cfg_iter) |kv| {
+    //    if (kv.val == null) {
+    //        continue;
+    //    }
 
-        const c_k: [:0]const u8 = try alloc.dupeSentinel(u8, kv.key, 0);
-        const c_v: [:0]const u8 = try alloc.dupeSentinel(u8, kv.val.?, 0);
+    //    const c_k: [:0]const u8 = try alloc.dupeSentinel(u8, kv.key, 0);
+    //    const c_v: [:0]const u8 = try alloc.dupeSentinel(u8, kv.val.?, 0);
 
-        defer alloc.free(c_k);
-        defer alloc.free(c_v);
+    //    defer alloc.free(c_k);
+    //    defer alloc.free(c_v);
 
-        try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_k), @ptrCast(c_v), &mgr.err));
-    }
+    //    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_k), @ptrCast(c_v), &mgr.err));
+    //}
 
     try checkAdbc(c.AdbcDatabaseInit(&mgr.db, &mgr.err));
 
