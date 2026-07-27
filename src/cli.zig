@@ -34,12 +34,6 @@ pub const SimpleArgParser = struct {
         const val: []const u8 = args.next() orelse "";
         const knm: []const u8 = key[2..];
 
-        if (std.mem.eql(u8, knm, "driver")) {
-            if (!config.AdbcDriverMap.has(val)) {
-                return error.UnsupportedDriverError;
-            }
-        }
-
         try self.vargs.put(alloc, knm, val);
     }
 

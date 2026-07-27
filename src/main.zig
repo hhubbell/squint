@@ -95,15 +95,8 @@ pub fn main(init: std.process.Init) !void {
     var argp: cli.SimpleArgParser = .{};
     defer argp.vargs.deinit(gpa);
 
-    argp.parse(gpa, init.minimal.args) catch |err| {
-        switch (err) {
-            error.UnsupportedDriverError => {
-                cli.help();
-
-                return error.FatalStartupError;
-            },
-            else => msg.addErr("Unexpected argument parsing error.")
-        }
+    argp.parse(gpa, init.minimal.args) catch {
+        msg.addErr("Unexpected argument parsing error.");
     };
 
     const cfg: db.AdbcConfig = .init(

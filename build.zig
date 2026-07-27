@@ -125,12 +125,6 @@ pub fn build(b: *std.Build) void {
     t.addIncludePath(b.path(b.pathJoin(&.{ nanoarrow_path, "src" })));
     t.addIncludePath(b.path(linenoise_path));
 
-    const config = b.createModule(.{
-        .root_source_file = b.path("src/config/root.zig"),
-        .target = target,
-        .optimize = optimize
-    });
-
     const date = b.createModule(.{
         .root_source_file = b.path("src/date/root.zig"),
         .target = target,
@@ -150,7 +144,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "c", .module = t.mod },
-            .{ .name = "config", .module = config },
             .{ .name = "date", .module = date },
             .{ .name = "build_options", .module = options.createModule() }
         },

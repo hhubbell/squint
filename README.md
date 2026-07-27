@@ -15,7 +15,7 @@ Connectivity (ADBC)](https://arrow.apache.org/adbc/current/index.html).
 ## Prerequisites
 
 Squint is written in Zig, version 0.17. The development version which currently builds is 
-`0.17.0-dev.947+36069a2a7`. Squint has Arrow dependencies. Squint also depends
+`0.17.0-dev.1464+6aff551f1`. Squint has Arrow dependencies. Squint also depends
 on `linenoise` for reading user input. All dependencies are vendored.
 Therefore, building is as simple as cloning this repo and running:
 
@@ -96,10 +96,3 @@ get there.
   correctly - e.g. `DATETIME`.
 - Truncate wide columns. Do something like `|Really long res...|` instead of
   printing the whole column. This should be configurable.
-- At the 11th hour, while writing this README, I learned about [ADBC connection
-  profiles](https://arrow.apache.org/adbc/current/format/connection_profiles.html).
-  Squint implements its own concept of a connection profile, but uses JSON
-  instead of TOML. JSON was chosen because Zig has a JSON parser in stdlib, and
-  this project aims to limit the number of dependencies it requires. Regardless,
-  this squint module appears to reproduce functionality that exists out of the
-  box in the ADBC library. It should probably be revisited.
