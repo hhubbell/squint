@@ -5,6 +5,7 @@ const mesg = @import("message.zig");
 const db = @import("db.zig");
 
 const Allocator = std.mem.Allocator;
+const Dir = std.Io.Dir;
 const Io = std.Io;
 const TokenIter = std.mem.SplitIterator(u8, .scalar);
 
@@ -19,7 +20,8 @@ pub const setCompletionCallback = c.linenoiseSetCompletionCallback;
 pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
     conn: *db.ConnManager,
-    writer: *Io.Writer
+    gpa: Allocator,
+    io: Io
 };
 
 const DotCommand = struct {
@@ -44,7 +46,9 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
         .help = "Return result sets unlimited",
         .call = dcNoLimit }},
     //"save": .{ .call = dcSave },
-    //"source": .{ .call = dcSource }
+    .{ ".source", DotCommand {
+        .help = "Read a file and execute its contents",
+        .call = dcSource }}
 });
 
 
@@ -76,7 +80,8 @@ fn iterDotCommands() [DotCommandMap.keys().len][]const u8 {
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    try opts.msg.printAllErrs(opts.writer);
+    var writer = Io.File.stderr().writer(opts.io, &.{});
+    try opts.msg.printAllErrs(&writer.interface);
 }
 
 fn dcExit(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -88,29 +93,31 @@ fn dcExit(args: *TokenIter, opts: DotCommandOptions) !void {
 
 fn dcHelp(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
+    var writer = Io.File.stderr().writer(opts.io, &.{});
 
     for (iterDotCommands()) |k| {
         const v = DotCommandMap.get(k) orelse unreachable;
 
-        try opts.writer.print("{[key]s:<[kwid]} : {[val]s}\n", .{
+        try writer.interface.print("{[key]s:<[kwid]} : {[val]s}\n", .{
             .key = k,
             .kwid = DotCommandMap.max_len,
             .val = v.help
         });
     }
 
-    try opts.writer.print("\n", .{});
+    try writer.interface.print("\n", .{});
 }
 
 fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     const cur: ?u64 = opts.conn.row_limit;
     const new: ?[]const u8 = args.next();
+    var writer = Io.File.stderr().writer(opts.io, &.{});
 
     if (new == null) {
         if (cur == null) {
-            try opts.writer.print("Unlimited\n", .{});
+            try writer.interface.print("Unlimited\n", .{});
         } else {
-            try opts.writer.print("{d}\n", .{cur.?});
+            try writer.interface.print("{d}\n", .{cur.?});
         }
 
         return;
@@ -125,6 +132,25 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
 fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
     opts.conn.row_limit = null;
+}
+
+fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
+    const fname: []const u8 = args.next() orelse {
+        opts.msg.addErr("Invalid command invocation.");
+        return error.DotCommandError;
+    };
+
+    const file = try Dir.cwd().openFile(opts.io, fname, .{});
+    defer file.close(opts.io);
+
+    const fsize = try file.length(opts.io);
+    const buffer = try opts.gpa.alloc(u8, fsize);
+    defer opts.gpa.free(buffer);
+
+    var reader: Io.File.Reader = file.reader(opts.io, buffer);
+    try reader.interface.readSliceAll(buffer);
+
+    std.debug.print("Would have executed\n\n{s}", .{buffer});
 }
 
 

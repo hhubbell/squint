@@ -18,7 +18,7 @@ const posix = std.posix;
 
 
 const StartupParams = struct {
-    driver: ?[]const u8,
+    config: ?db.AdbcConfig,
     pager: ?pager.PagerType,
     winsize: ?posix.winsize,
     mesg: ?*mesg.MessageBuffer
@@ -31,8 +31,12 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
         ++ "Type \".help\" for dotcommands. "
         ++ "Type \".exit\" or ^D to quit.\n", .{version});
 
-    if (parms.driver) |d| {
-        try writer.print("Driver \"{s}\"\n", .{d});
+    if (parms.config) |c| {
+        if (c.driver) |d| {
+            try writer.print("Driver \"{s}\"\n", .{d});
+        } else {
+            try writer.print("Profile \"{s}\"\n", .{c.profile.?});
+        }
     }
 
     if (parms.pager) |p| {
@@ -116,8 +120,7 @@ pub fn main(init: std.process.Init) !void {
     //    cfg = try config.simpleConfig(arg_driver, arg_uri);
     //}
 
-    var stderr = Io.File.stderr();
-    var stderrw = stderr.writer(io, &.{});
+    var stderr = Io.File.stderr().writer(io, &.{});
 
     // TODO:
     //  We can use window size information to apply some formatting rules to
@@ -133,8 +136,8 @@ pub fn main(init: std.process.Init) !void {
         msg.addFatalErr(conn.lastErrMsg());
     };
 
-    try startupMessage(&stderrw.interface, .{
-        .driver = cfg.driver orelse "profile",
+    try startupMessage(&stderr.interface, .{
+        .config = cfg,
         .pager = page_exec,
         .winsize = winsize,
         .mesg = &msg
@@ -172,9 +175,10 @@ pub fn main(init: std.process.Init) !void {
             input.dotCommand(std.mem.span(query), .{
                 .msg = &msg,
                 .conn = &conn,
-                .writer = &stderrw.interface
+                .gpa = gpa,
+                .io = io
             }) catch {
-                try msg.printLastErr(&stderrw.interface);
+                try msg.printLastErr(&stderr.interface);
             };
 
             continue;
@@ -185,7 +189,7 @@ pub fn main(init: std.process.Init) !void {
 
         var stmt = db.prepareStatement(&conn, std.mem.span(query)) catch {
             msg.addErr(conn.lastErrMsg());
-            try msg.printLastErr(&stderrw.interface);
+            try msg.printLastErr(&stderr.interface);
             continue;
         };
 
@@ -196,7 +200,7 @@ pub fn main(init: std.process.Init) !void {
                 error.Canceled => msg.addErr("Execution canceled."),
                 else => msg.addErr(conn.lastErrMsg())
             }
-            try msg.printLastErr(&stderrw.interface);
+            try msg.printLastErr(&stderr.interface);
             continue;
         };
 
@@ -238,7 +242,7 @@ pub fn main(init: std.process.Init) !void {
                 else => msg.addErr("Uncaught Error.")
             }
 
-            try msg.printLastErr(&stderrw.interface);
+            try msg.printLastErr(&stderr.interface);
             continue;
         };
 
@@ -264,7 +268,7 @@ pub fn main(init: std.process.Init) !void {
         try pager.page(io, page_exec, prntbuf);
 
         // Diagnostics
-        try format.printPerfData(&stderrw.interface, perf);
+        try format.printPerfData(&stderr.interface, perf);
 
         if (strm.release) |release| release(&strm);
         try db.releaseStatement(&conn, &stmt);
