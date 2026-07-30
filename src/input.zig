@@ -1,8 +1,8 @@
 const std = @import("std");
+const adbc = @import("adbc");
 const c = @import("c");
 
 const mesg = @import("message.zig");
-const db = @import("db.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -19,7 +19,7 @@ pub const setCompletionCallback = c.linenoiseSetCompletionCallback;
 
 pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
-    conn: *db.ConnManager,
+    conn: *adbc.ConnectionIo,
     gpa: Allocator,
     io: Io
 };

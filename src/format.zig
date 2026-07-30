@@ -1,10 +1,6 @@
 const std = @import("std");
-const time = std.time;
+const adbc = @import("adbc");
 const c = @import("c");
-const date = @import("date");
-
-const stream = @import("stream.zig");
-const perf = @import("perf.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -33,7 +29,7 @@ pub const Box = struct {
 
 
 /// Determine the required buffer size for printing a stream result set
-pub fn calcResultBufSize(meta: []stream.ColMetadata, rows: u64) u64 {
+pub fn calcResultBufSize(meta: []adbc.ColMetadata, rows: u64) u64 {
 
     // Determine the buffer size needed to print a single row
     const row_buf: u64 = calcRowBufSize(meta);
@@ -65,7 +61,7 @@ pub fn calcResultBufSize(meta: []stream.ColMetadata, rows: u64) u64 {
 
 /// Determine the required buffer size for printing one row without the
 /// header
-pub fn calcRowBufSize(meta: []stream.ColMetadata) u64 {
+pub fn calcRowBufSize(meta: []adbc.ColMetadata) u64 {
     const sep_w: u64 = Box.VertSep.len; // For col sep box char
     const nl_w: u64 = "\n".len;         // Newline len
 
@@ -82,7 +78,7 @@ pub fn calcRowBufSize(meta: []stream.ColMetadata) u64 {
 
 /// Determine the required buffer size for printing one row of box drawing
 /// characters. E.g. top border, bottom border.
-pub fn calcRowBoxSize(meta: []stream.ColMetadata) u64 {
+pub fn calcRowBoxSize(meta: []adbc.ColMetadata) u64 {
     const sep_w: u64 = Box.VertSep.len; // For col sep box char
     const nl_w: u64 = "\n".len;         // Newline len
 
@@ -98,7 +94,7 @@ pub fn calcRowBoxSize(meta: []stream.ColMetadata) u64 {
 }
 
 /// Determine the required buffer size for printing all color escape sequences
-pub fn calcColorBufSize(meta: []stream.ColMetadata) u64 {
+pub fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = 0;
 
     for (meta) |col| {
@@ -153,7 +149,7 @@ pub fn padRightJustValue(buffer: *[]u8, value: []const u8) usize {
     return full;
 }
 
-pub fn printHeader(buffer: *[]u8, header: []stream.ColMetadata) usize {
+pub fn printHeader(buffer: *[]u8, header: []adbc.ColMetadata) usize {
     const box_w = calcRowBoxSize(header);
 
     var fmtbuf = buffer.*;
@@ -177,7 +173,7 @@ pub fn printHeader(buffer: *[]u8, header: []stream.ColMetadata) usize {
 
 /// Print the border horizontal separator to a buffer.
 /// Return the number of bytes written
-pub fn printHorizSep(buffer: *[]u8, header: []stream.ColMetadata, orientation: HorizontalSeparator) usize {
+pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: HorizontalSeparator) usize {
     var l_s: []const u8 = undefined;
     var i_s: []const u8 = undefined;
     var r_s: []const u8 = undefined;
@@ -223,17 +219,17 @@ pub fn printHorizSep(buffer: *[]u8, header: []stream.ColMetadata, orientation: H
     return idx;
 }
 
-pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
+pub fn printStreamBuffer(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
     const box_w = calcRowBoxSize(asb.metadata.?);
 
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    try stream.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
+    try adbc.err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
     for (0..asb.filled) |i| {
         const batch = asb.items[i];
-        try stream.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
+        try adbc.err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
 
         for (0..asb.countBatchRows(i)) |r_i| {
             var rowbuf = buffer.*[idx..];
@@ -247,7 +243,7 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
                 var byte_w = asb.metadata.?[c_i].bytes + PAD;
                 var cb_idx: usize = 0;
 
-                if (stream.isNull(col, r_i)) {
+                if (adbc.meta.isNull(col, r_i)) {
                     // We need a slightly larger buffer for printing values with
                     // color highlighting
                     byte_w += GREY.len + RESET.len;
@@ -256,8 +252,8 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
                     cb_idx += padCenterValue(&colbuf, GREY ++ "null" ++ RESET);
                 } else {
                     var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
-                    const val_str = stream.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);
-                    if (stream.isNumeric(col)) {
+                    const val_str = adbc.meta.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);
+                    if (adbc.meta.isNumeric(col)) {
                         cb_idx += padRightJustValue(&colbuf, val_str);
                     } else {
                         cb_idx += padLeftJustValue(&colbuf, val_str);
@@ -278,26 +274,6 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *stream.ArrowStreamBuffer) !void {
 
 }
 
-/// Print performance data
-pub fn printPerfData(writer: *Io.Writer, perfd: perf.PerfData) !void {
-    var buf: [55]u8 = undefined;
-    const row = try std.fmt.bufPrint(&buf, "{d} rows / {d} bytes", .{perfd.rows, perfd.bufsz});
-
-    var prep: [5]u8 = undefined;
-    var exec: [5]u8 = undefined;
-    var load: [5]u8 = undefined;
-    var proc: [5]u8 = undefined;
-    var rend: [5]u8 = undefined;
-
-    date.fmt.toDisplayTime(perfd.prep, &prep);
-    date.fmt.toDisplayTime(perfd.exec, &exec);
-    date.fmt.toDisplayTime(perfd.load, &load);
-    date.fmt.toDisplayTime(perfd.proc, &proc);
-    date.fmt.toDisplayTime(perfd.rend, &rend);
-
-    try writer.print("{s} | prep: {s} exec: {s} load: {s} proc: {s} rend: {s}\n", .{
-        row, prep, exec, load, proc, rend});
-}
 
 /// Copy a value slice to buffer. Return the number of bytes written.
 fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {

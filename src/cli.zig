@@ -1,5 +1,4 @@
 const std = @import("std");
-const config = @import("config");
 
 const version = @import("build_options").version;
 

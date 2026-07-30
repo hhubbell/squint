@@ -1,12 +1,11 @@
 const std = @import("std");
-const config = @import("config");
+const adbc = @import("adbc");
+const c = @import("c");
 
 const cli = @import("cli.zig");
-const db = @import("db.zig");
 const mesg = @import("message.zig");
 const format = @import("format.zig");
 const input = @import("input.zig");
-const stream = @import("stream.zig");
 const pager = @import("pager.zig");
 const perfd = @import("perf.zig");
 
@@ -18,7 +17,7 @@ const posix = std.posix;
 
 
 const StartupParams = struct {
-    config: ?db.AdbcConfig,
+    config: ?adbc.AdbcConfig,
     pager: ?pager.PagerType,
     winsize: ?posix.winsize,
     mesg: ?*mesg.MessageBuffer
@@ -31,22 +30,22 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
         ++ "Type \".help\" for dotcommands. "
         ++ "Type \".exit\" or ^D to quit.\n", .{version});
 
-    if (parms.config) |c| {
-        if (c.driver) |d| {
+    if (parms.config) |x| {
+        if (x.driver) |d| {
             try writer.print("Driver \"{s}\"\n", .{d});
         } else {
-            try writer.print("Profile \"{s}\"\n", .{c.profile.?});
+            try writer.print("Profile \"{s}\"\n", .{x.profile.?});
         }
     }
 
-    if (parms.pager) |p| {
-        try writer.print("Pager \"{s}\"\n", .{@tagName(p)});
+    if (parms.pager) |x| {
+        try writer.print("Pager \"{s}\"\n", .{@tagName(x)});
     }
 
     // TODO URI string or connection params?
 
-    if (parms.winsize) |w| {
-        try writer.print("Output window {d} x {d}\n", .{w.row, w.col});
+    if (parms.winsize) |x| {
+        try writer.print("Output window {d} x {d}\n", .{x.row, x.col});
     }
 
     // If we encountered any non-fatal errors during startup, print them
@@ -103,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
         msg.addErr("Unexpected argument parsing error.");
     };
 
-    const cfg: db.AdbcConfig = .init(
+    const cfg: adbc.AdbcConfig = .init(
         argp.vargs.get("profile"),
         argp.vargs.get("driver"),
         argp.vargs.get("uri"));
@@ -129,12 +128,11 @@ pub fn main(init: std.process.Init) !void {
 
     const page_exec = pager.whichPager(io, init.environ_map);
 
-    var conn: db.ConnManager = .init();
-    defer _ = conn.deinit() catch {};
-
-    db.connectDriver(gpa, &conn, cfg) catch {
+    var conn: adbc.ConnectionIo = .init();
+    adbc.connect(gpa, &conn, cfg) catch {
         msg.addFatalErr(conn.lastErrMsg());
     };
+    defer _ = conn.deinit() catch {};
 
     try startupMessage(&stderr.interface, .{
         .config = cfg,
@@ -151,7 +149,8 @@ pub fn main(init: std.process.Init) !void {
     input.setCompletionCallback(input.completionCallback);
 
     while (true) {
-        const query = input.readline("> ");
+        const query: [*c]u8 = input.readline("> ");
+        defer std.c.free(query);
 
         // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
         // then reset and continue. Otherwise exit the main loop.
@@ -187,15 +186,15 @@ pub fn main(init: std.process.Init) !void {
         // Basic performance monitoring
         var perf: perfd.PerfData = .init(io);
 
-        var stmt = db.prepareStatement(&conn, std.mem.span(query)) catch {
+        // FIXME: Move this lifecycle management to adbc module directly
+        var stmt: c.AdbcStatement = adbc.prepareStatement(&conn, query) catch {
             msg.addErr(conn.lastErrMsg());
             try msg.printLastErr(&stderr.interface);
             continue;
         };
+        defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, &conn.err)) catch @panic("Failed to release statement.");
 
-        perf.prep = perf.lap(io);
-
-        var strm = db.executeStatementWithCancel(io, &conn, &stmt) catch |err| {
+        var strm: c.ArrowArrayStream = adbc.executeWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {
                 error.Canceled => msg.addErr("Execution canceled."),
                 else => msg.addErr(conn.lastErrMsg())
@@ -203,6 +202,7 @@ pub fn main(init: std.process.Init) !void {
             try msg.printLastErr(&stderr.interface);
             continue;
         };
+        defer if (strm.release) |release| release(&strm);
 
         perf.exec = perf.lap(io);
 
@@ -216,28 +216,28 @@ pub fn main(init: std.process.Init) !void {
         // have a noticeable impact on performance. It's more so a quality of
         // life behavior to avoid accidentally dumping millions of rows to the
         // user's stdout.
-        var res: stream.ArrowStreamBuffer = undefined;
+        var res: adbc.ArrowStreamBuffer = undefined;
         if (conn.row_limit == null) {
             // Unlimited with 64 initial buffers (65,536 row initial cap)
-            res = try stream.ArrowStreamBuffer.initBuffers(gpa, 64);
+            res = try .initBuffers(gpa, 64);
         } else {
             // Fixed limit bufers based on user-defined input
             res = try .initRows(gpa, conn.row_limit.?);
         }
         defer res.deinit(gpa);
 
-        stream.readStream(gpa, &strm, &res) catch |err| {
+        adbc.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
-                error.AdbcStreamError => {
-                    if (strm.get_last_error) |callable| {
-                        const msg_txt: [*c]const u8 = callable(&strm);
+                error.ArrowStreamError => {
+                    if (strm.get_last_error) |cb| {
+                        const err_msg: [*c]const u8 = cb(&strm);
 
-                        if (msg_txt != null) {
-                            msg.addErr(std.mem.span(msg_txt));
+                        if (err_msg != null) {
+                            msg.addErr(std.mem.span(err_msg));
                         }
                     }
                 },
-                error.AdbcNanoArrowError => msg.addErr(&res.err.message),
+                error.NanoArrowError => msg.addErr(&res.err.message),
                 error.AdbcLibError => msg.addErr("ADBC Library Error."),
                 else => msg.addErr("Uncaught Error.")
             }
@@ -248,13 +248,14 @@ pub fn main(init: std.process.Init) !void {
 
         perf.load = perf.lap(io);
 
-        res.metadata = try stream.calcColumnMetadata(io, gpa, &res);
+        res.metadata = try adbc.calcColumnMetadata(io, gpa, &res);
         perf.rows = res.countRows();
-        perf.bufsz = format.calcResultBufSize(res.metadata.?, perf.rows);
+
+        const bufsz = format.calcResultBufSize(res.metadata.?, perf.rows);
 
         perf.proc = perf.lap(io);
 
-        var prntbuf = try gpa.alloc(u8, perf.bufsz);
+        var prntbuf = try gpa.alloc(u8, bufsz);
         defer gpa.free(prntbuf);
 
         // Write the ArrowStream result set to the allocated print buffer. By
@@ -268,12 +269,7 @@ pub fn main(init: std.process.Init) !void {
         try pager.page(io, page_exec, prntbuf);
 
         // Diagnostics
-        try format.printPerfData(&stderr.interface, perf);
-
-        if (strm.release) |release| release(&strm);
-        try db.releaseStatement(&conn, &stmt);
-
-        std.c.free(query);
+        try stderr.interface.print("{f}\n", .{ perf });
     }
 }
 

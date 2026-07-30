@@ -1,17 +1,16 @@
 const std = @import("std");
 const c = @import("c");
-
 const date = @import("date");
-const db = @import("db.zig");
-const format = @import("format.zig");
+
+const err = @import("err.zig");
+
+const ArrowStreamBuffer = @import("StreamBuffer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 
 pub const ColMetadata = struct {
-    const Self = @This();
-
     name: []const u8,
     width: usize,
     bytes: usize,
@@ -25,131 +24,118 @@ pub const ColMetadata = struct {
     time_unit: c.ArrowTimeUnit
 };
 
-
-pub const ArrowStreamBuffer = struct {
-    const Self = @This();
-    const buf_growth: usize = 64;
-
-    schema: c.ArrowSchema,
-    items: []c.ArrowArray,
-    err: c.ArrowError,
-    filled: u64,
-    fixed: bool,
-    metadata: ?[]ColMetadata = null,
-
-    /// Initialize an ArrowStreamBuffer container based on a row count ceiling
-    /// capacity. This buffer will NOT be resized if the stream yields more than
-    /// the initialized buffers can hold.
-    ///
-    /// The following is INCORRECT:
-    /// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. Given
-    /// an initial capacity row value, the number of buffers initialized is the
-    /// ceiling of that value divided by 1024.
-    ///
-    /// This assumption was true for SQLite but not DuckDB. Other database
-    /// drivers are unknown. This is not a dealbreaker, but we need to make the
-    /// behavior of this consistent. E.g. can we set the driver page size? And
-    /// should we refer to the limit in terms of pages?
-    pub fn initRows(alloc: Allocator, capacity: u64) !Self {
-        // We assume that an ArrowArrayStream batch is 1024 rows. Based on the
-        // number of rows we wish to consume (`until`), calculate the max number
-        // of batches we could consume and allocate a buffer for the ArrowArrays.
-        const assumed_batch: u64 = 1024;
-        const max_batches: u64 = try std.math.divCeil(u64, capacity, assumed_batch);
-        const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, max_batches);
-
-        return .{
-            .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-            .items = batch_buf,
-            .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0,
-            .fixed = true};
-    }
-
-    /// Initialize an ArrowStreamBuffer container using a set number of buffers
-    /// the can be resized. This initializer is slightly more simple than
-    /// initRows.
-    pub fn initBuffers(alloc: Allocator, capacity: u64) !Self {
-        const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, capacity);
-
-        return .{
-            .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-            .items = batch_buf,
-            .err = std.mem.zeroInit(c.ArrowError, .{}),
-            .filled = 0,
-            .fixed = false};
-    }
-
-    pub fn deinit(self: *Self, alloc: Allocator) void {
-        if (self.schema.release) |release| release(&self.schema);
-
-        for (0..self.filled) |i| {
-            var batch = self.items[i];
-            if (batch.release) |release| release(&batch);
-        }
-
-        alloc.free(self.items);
-
-        if (self.metadata != null) alloc.free(self.metadata.?);
-    }
-
-    pub fn add(self: *Self, batch: c.ArrowArray) void {
-        self.items[self.filled] = batch;
-
-        self.filled += 1;
-    }
-
-    pub fn canResize(self: *Self) bool {
-        return !self.fixed;
-    }
-
-    pub fn countBatchRows(self: *Self, i: usize) u64 {
-        // FIXME: Bounds check?
-        return @intCast(self.items[i].children[0].*.length);
-    }
-
-    pub fn countRows(self: *Self) u64 {
-        var accum: u64 = 0;
-
-        for (0..self.filled) |i| {
-            accum += self.countBatchRows(i);
-        }
-
-        return accum;
-    }
-
-    pub fn hasCapacity(self: *Self) bool {
-        return self.filled < self.items.len;
-    }
-
-    pub fn setBatchSize(self: *Self, len: u64) void {
-        self.batch_sz[self.filled] = len;
-    }
-
-    pub fn resize(self: *Self, alloc: Allocator) !void {
-        const bufsize = self.items.len + Self.buf_growth;
-        self.items = try alloc.realloc(self.items, bufsize);
-    }
+const ColFmt = struct {
+    width: usize,
+    bytes: usize,
+    color_slots: usize,
+    col_i: usize
 };
 
 
-fn checkAdbcStream(rcode: c_int) !void {
-    if (rcode != 0) {
-        return error.AdbcStreamError;
+/// Generate a slice of ColMetadata
+pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
+    const header = try getHeader(alloc, &buffer.schema);
+
+    //const cols: usize = header.len;
+    const chunks: usize = header.len * buffer.filled;
+
+    const q_buf = try alloc.alloc(ColFmt, chunks);
+    defer alloc.free(q_buf);
+
+    var queue: Io.Queue(ColFmt) = .init(q_buf);
+
+    var consumer = try io.concurrent(consumeResult, .{
+        io, &queue, chunks, header
+    });
+    defer _ = consumer.cancel(io) catch {};
+
+    var grp: Io.Group = .init;
+    defer grp.cancel(io);
+
+    for (0..buffer.filled) |i| {
+
+        grp.concurrent(io, produceBatchMaximums, .{
+            io, &queue, i, buffer, header
+        }) catch |e| {
+            _ = try consumer.cancel(io);
+            return e;
+        };
+    }
+
+    try consumer.await(io);
+    try grp.await(io);
+
+    return header;
+}
+
+fn consumeResult(
+    io: Io,
+    queue: *Io.Queue(ColFmt),
+    count: usize,
+    header: []ColMetadata
+) !void {
+    for (0..count) |_| {
+        const res = try queue.getOne(io);
+        const j = res.col_i;
+
+        //std.debug.print("{d}, {d}, {d}\n", .{header.len, count, j});
+
+        header[j].width = @max(header[j].width, res.width);
+        header[j].bytes = @max(header[j].bytes, res.bytes);
+        header[j].color_slots += res.color_slots;
     }
 }
 
-pub fn checkNanoArrow(rcode: c_int) !void {
-    if (rcode != c.NANOARROW_OK) {
-        return error.AdbcNanoArrowError;
+pub fn produceBatchMaximums(
+    io: Io,
+    queue: *Io.Queue(ColFmt),
+    index: usize,
+    buffer: *ArrowStreamBuffer,
+    //FIXME:
+    header: []ColMetadata
+) !void {
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+    err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err)) catch {
+        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+        std.debug.print("Process likely deadlocked\n", .{});
+        return error.Canceled;
+    };
+
+    var batch: c.ArrowArray = buffer.items[index];
+
+    err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
+        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+        std.debug.print("Process likely deadlocked\n", .{});
+        return error.Canceled;
+    };
+
+    // Each child of the buffer is a column array
+    for (0..@intCast(view.n_children)) |j| {
+        const col = view.children[j];
+
+        var c_fmt: ColFmt = .{
+            .width = 0,
+            .bytes = 0,
+            .color_slots = 0,
+            .col_i = j};
+
+        for (0..@intCast(col.*.length)) |k| {
+            c_fmt.width = @max(c_fmt.width, slotWidth(&header[j], col, k));
+            c_fmt.bytes = @max(c_fmt.bytes, byteWidth(&header[j], col, k));
+            c_fmt.color_slots += @intFromBool(isNull(col, k));
+        }
+
+        queue.putOne(io, c_fmt) catch {
+            return error.Canceled;
+        };
     }
 }
 
 fn getHeader(
     alloc: Allocator,
     schema: *c.ArrowSchema,
-    err: *c.ArrowError
 ) ![]ColMetadata {
+    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
     const n: usize = @intCast(schema.n_children);
 
     var result: []ColMetadata = try alloc.alloc(ColMetadata, n);
@@ -159,7 +145,7 @@ fn getHeader(
         const col: *c.ArrowSchema = schema.children[i];
         const name: []const u8 = if (col.*.name) |s| std.mem.span(s) else "column";
 
-        try checkNanoArrow(c.ArrowSchemaViewInit(&view, col, err));
+        try err.checkNanoArrow(c.ArrowSchemaViewInit(&view, col, &a_err));
 
         // Store the decimal storage width if we are dealing with a DECIMAL
         const dec_width: ?i32 = switch(view.type) {
@@ -285,7 +271,7 @@ pub fn extractValue(
             // FIXME:
             //  1. Error handling
             //  2. How many allocations does this make?
-            //try checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
+            //try err.checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
             _ = c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
 
             const val_len: usize = @intCast(val.size_bytes);
@@ -403,7 +389,7 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
             // FIXME:
             //  1. Error handling
             //  2. How many allocations does this make?
-            //try checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
+            //try err.checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
             _ = c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
 
             return @intCast(val.size_bytes);
@@ -416,153 +402,10 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 ///
 /// DEPRECATED
 fn byteWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
-    //const row: i64 = @intCast(idx);
-
     // This only makes sense if we ever color an entire column. adding
     // the extra bytes for values in a column gets weird when some values
     // are colorable and some not. Nulls are the example. 
-    //
-    // We'll fix it later
     const color: usize = 0;
-
-    //if (isNull(col, row)) {
-    //    color = format.GREY.len + format.RESET.len;
-    //}
 
     return slotWidth(meta, col, idx) + color;
 }
-
-/// Read and format a stream into a string buffer until reaching
-/// a soft limit. The stream can be consumed later to continue
-/// past this limit if desired, but any data read will be unavailable.
-pub fn readStream(
-    alloc: Allocator,
-    stream: *c.ArrowArrayStream,
-    buffer: *ArrowStreamBuffer
-) anyerror!void {
-    const getSchema = stream.get_schema orelse return error.AdbcLibError;
-    const getNext = stream.get_next orelse return error.AdbcLibError;
-
-    try checkAdbcStream(getSchema(stream, &buffer.schema));
-
-    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(stream, &batch) == 0) {
-        if (batch.release == null) break;
-
-        if (!buffer.hasCapacity()) {
-            if (!buffer.canResize()) {
-                break;
-            }
-            try buffer.resize(alloc);
-        }
-
-        buffer.add(batch);
-    }
-}
-
-/// Generate a slice of ColMetadata
-pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
-    const header = try getHeader(alloc, &buffer.schema, &buffer.err);
-
-    //const cols: usize = header.len;
-    const chunks: usize = header.len * buffer.filled;
-
-    const q_buf = try alloc.alloc(ColFmt, chunks);
-    defer alloc.free(q_buf);
-
-    var queue: Io.Queue(ColFmt) = .init(q_buf);
-
-    var consumer = try io.concurrent(consumeResult, .{
-        io, &queue, chunks, header
-    });
-    defer _ = consumer.cancel(io) catch {};
-
-    var grp: Io.Group = .init;
-    defer grp.cancel(io);
-
-    for (0..buffer.filled) |i| {
-
-        grp.concurrent(io, produceBatchMaximums, .{
-            io, &queue, i, buffer, header
-        }) catch |e| {
-            _ = try consumer.cancel(io);
-            return e;
-        };
-    }
-
-    try consumer.await(io);
-    try grp.await(io);
-
-    return header;
-}
-
-const ColFmt = struct {
-    width: usize,
-    bytes: usize,
-    color_slots: usize,
-    col_i: usize
-};
-
-fn consumeResult(
-    io: Io,
-    queue: *Io.Queue(ColFmt),
-    count: usize,
-    header: []ColMetadata
-) !void {
-    for (0..count) |_| {
-        const res = try queue.getOne(io);
-        const j = res.col_i;
-
-        //std.debug.print("{d}, {d}, {d}\n", .{header.len, count, j});
-
-        header[j].width = @max(header[j].width, res.width);
-        header[j].bytes = @max(header[j].bytes, res.bytes);
-        header[j].color_slots += res.color_slots;
-    }
-}
-
-pub fn produceBatchMaximums(
-    io: Io,
-    queue: *Io.Queue(ColFmt),
-    index: usize,
-    buffer: *ArrowStreamBuffer,
-    //FIXME:
-    header: []ColMetadata
-) !void {
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err)) catch {
-        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
-        std.debug.print("Process likely deadlocked\n", .{});
-        return error.Canceled;
-    };
-
-    var batch: c.ArrowArray = buffer.items[index];
-
-    checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
-        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
-        std.debug.print("Process likely deadlocked\n", .{});
-        return error.Canceled;
-    };
-
-    // Each child of the buffer is a column array
-    for (0..@intCast(view.n_children)) |j| {
-        const col = view.children[j];
-
-        var c_fmt: ColFmt = .{
-            .width = 0,
-            .bytes = 0,
-            .color_slots = 0,
-            .col_i = j};
-
-        for (0..@intCast(col.*.length)) |k| {
-            c_fmt.width = @max(c_fmt.width, slotWidth(&header[j], col, k));
-            c_fmt.bytes = @max(c_fmt.bytes, byteWidth(&header[j], col, k));
-            c_fmt.color_slots += @intFromBool(isNull(col, k));
-        }
-
-        queue.putOne(io, c_fmt) catch {
-            return error.Canceled;
-        };
-    }
-}
-

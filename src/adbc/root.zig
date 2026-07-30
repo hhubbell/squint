@@ -1,12 +1,20 @@
 const std = @import("std");
 const c = @import("c");
-const config = @import("config");
+
+pub const err = @import("err.zig");
+pub const meta = @import("meta.zig");
+
+pub const calcColumnMetadata = meta.calcColumnMetadata;
+pub const ColMetadata = meta.ColMetadata;
+
+pub const ArrowStreamBuffer = @import("StreamBuffer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const posix = std.posix;
 
 var cancelExecAtom = std.atomic.Value(bool).init(false);
+
 
 /// WARNING: The order of these fields matter. If driver/uri are set, then they
 /// can override whatever is in profile
@@ -32,14 +40,13 @@ pub const AdbcConfig = struct {
     }
 };
 
-pub const ConnManager = struct {
+pub const ConnectionIo = struct {
     const Self = @This();
 
     db: c.AdbcDatabase,
     conn: c.AdbcConnection,
     err: c.AdbcError,
     rows_affected: i64 = 0,
-    // NOTE: Default row limit is 10 buffers of 1024 rows
     row_limit: ?u64 = 10_240,
 
     pub fn init() Self {
@@ -51,8 +58,8 @@ pub const ConnManager = struct {
     }
 
     pub fn deinit(self: *Self) !void {
-       try checkAdbc(c.AdbcConnectionRelease(&self.conn, &self.err));
-       try checkAdbc(c.AdbcDatabaseRelease(&self.db, &self.err));
+       try err.checkAdbc(c.AdbcConnectionRelease(&self.conn, &self.err));
+       try err.checkAdbc(c.AdbcDatabaseRelease(&self.db, &self.err));
     }
 
     pub fn lastErrMsg(self: *Self) []const u8 {
@@ -65,16 +72,16 @@ pub const ConnManager = struct {
 };
 
 
-/// Wraps an Arrow ADBC function call in error handling
-pub fn checkAdbc(rcode: c_int) !void {
-    if (rcode != c.ADBC_STATUS_OK) {
-        return error.AdbcError;
-    }
-}
-
-pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: AdbcConfig) !void {
-    try checkAdbc(c.AdbcDatabaseNew(&mgr.db, &mgr.err));
-    try checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&mgr.db, c.ADBC_LOAD_FLAG_DEFAULT, &mgr.err));
+pub fn connect(
+    alloc: Allocator,
+    conn: *ConnectionIo,
+    cfg: AdbcConfig
+) !void {
+    try err.checkAdbc(c.AdbcDatabaseNew(&conn.db, &conn.err));
+    try err.checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&conn.db,
+        c.ADBC_LOAD_FLAG_DEFAULT,
+        &conn.err
+    ));
 
     inline for (@typeInfo(@TypeOf(cfg)).@"struct".field_names) |f| {
         const v = @field(cfg, f);
@@ -86,63 +93,22 @@ pub fn connectDriver(alloc: Allocator, mgr: *ConnManager, cfg: AdbcConfig) !void
             defer alloc.free(c_f);
             defer alloc.free(c_v);
 
-            try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_f), @ptrCast(c_v), &mgr.err));
+            try err.checkAdbc(c.AdbcDatabaseSetOption(&conn.db,
+                @ptrCast(c_f),
+                @ptrCast(c_v),
+                &conn.err));
         }
     }
 
-    // We guarantee that at least uri is part of the config, so we do not need
-    // to explicitly set this option. Instead we just iterate over every field
-    // and set the option on the connection.
-    //
-    // XXX:
-    // The duckdb docs say use "path" but URI also works. Presumably URI could
-    // add additional things but IDK what that would be. It doesn't matter
-    // because we just iterate over the struct. This comment is kind of
-    // pointless, but I think I'll need to remember this someday.
-    //const cfg_iter = try cfg.iterFields(alloc);
-    //defer alloc.free(cfg_iter);
+    try err.checkAdbc(c.AdbcDatabaseInit(&conn.db, &conn.err));
 
-    //for (cfg_iter) |kv| {
-    //    if (kv.val == null) {
-    //        continue;
-    //    }
-
-    //    const c_k: [:0]const u8 = try alloc.dupeSentinel(u8, kv.key, 0);
-    //    const c_v: [:0]const u8 = try alloc.dupeSentinel(u8, kv.val.?, 0);
-
-    //    defer alloc.free(c_k);
-    //    defer alloc.free(c_v);
-
-    //    try checkAdbc(c.AdbcDatabaseSetOption(&mgr.db, @ptrCast(c_k), @ptrCast(c_v), &mgr.err));
-    //}
-
-    try checkAdbc(c.AdbcDatabaseInit(&mgr.db, &mgr.err));
-
-    try checkAdbc(c.AdbcConnectionNew(&mgr.conn, &mgr.err));
-    try checkAdbc(c.AdbcConnectionInit(&mgr.conn, &mgr.db, &mgr.err));
+    try err.checkAdbc(c.AdbcConnectionNew(&conn.conn, &conn.err));
+    try err.checkAdbc(c.AdbcConnectionInit(&conn.conn, &conn.db, &conn.err));
 }
 
-pub fn prepareStatement(mgr: *ConnManager, query: []const u8) !c.AdbcStatement {
-    const c_query: [*:0]const u8 = @ptrCast(query.ptr);
-
-    var stmt: c.AdbcStatement = std.mem.zeroInit(c.AdbcStatement, .{});
-
-    try checkAdbc(c.AdbcStatementNew(&mgr.conn, &stmt, &mgr.err));
-
-    // NOTE: Errors at this point usually indicate user-inflicted problems,
-    // however, it will up to the caller how best to handle them.
-    try checkAdbc(c.AdbcStatementSetSqlQuery(&stmt, c_query, &mgr.err));
-
-    return stmt;
-}
-
-/// Execute an AdbcStatement with cancelation by running the query concurrently
-/// and listening for a possible SIGINT to cancel. If the query returns or
-/// SIGINT is received, then clean up and return. If SIGINT is received, then
-/// also cancel the execution and return error.Cancelable
-pub fn executeStatementWithCancel(
+pub fn executeWithCancel(
     io: Io,
-    mgr: *ConnManager,
+    conn: *ConnectionIo,
     stmt: *c.AdbcStatement
 ) !c.ArrowArrayStream {
     cancelExecAtom.store(false, .release);
@@ -157,7 +123,7 @@ pub fn executeStatementWithCancel(
 
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
-    sel.async(.runner, executeStatement, .{mgr, stmt, &stream});
+    sel.async(.runner, executeStatement, .{conn, stmt, &stream});
 
     // Install a temporary signal handler to capture ctrl-c and cancel
     // the query being executed.
@@ -171,7 +137,7 @@ pub fn executeStatementWithCancel(
         null
     );   
 
-    sel.async(.cancel, cancelExecution, .{io, mgr, stmt});
+    sel.async(.cancel, cancelExecution, .{io, conn, stmt});
 
     const res = try sel.await();
     _ = sel.cancel();
@@ -191,23 +157,35 @@ pub fn executeStatementWithCancel(
         .runner => |r| { try r; return stream; },
         .cancel => return error.Canceled
     }
+
 }
 
-pub fn releaseStatement(mgr: *ConnManager, stmt: *c.AdbcStatement) !void {
-    try checkAdbc(c.AdbcStatementRelease(stmt, &mgr.err));
+pub fn prepareStatement(
+    conn: *ConnectionIo,
+    c_query: [*c]const u8
+) !c.AdbcStatement {
+    var stmt: c.AdbcStatement = std.mem.zeroInit(c.AdbcStatement, .{});
+
+    try err.checkAdbc(c.AdbcStatementNew(&conn.conn, &stmt, &conn.err));
+
+    // NOTE: Errors at this point usually indicate user-inflicted problems,
+    // however, it will up to the caller how best to handle them.
+    try err.checkAdbc(c.AdbcStatementSetSqlQuery(&stmt, c_query, &conn.err));
+
+    return stmt;
 }
 
 /// Wrap AdbcStatementExecuteQuery in error handling
 fn executeStatement(
-    mgr: *ConnManager,
+    conn: *ConnectionIo,
     stmt: *c.AdbcStatement,
     stream: *c.ArrowArrayStream
 ) !void {
-    try checkAdbc(c.AdbcStatementExecuteQuery(
+    try err.checkAdbc(c.AdbcStatementExecuteQuery(
         stmt,
         stream,
-        &mgr.rows_affected,
-        &mgr.err
+        &conn.rows_affected,
+        &conn.err
     ));
 }
 
@@ -219,11 +197,41 @@ fn handleSigIntCancel(sig: posix.SIG) callconv(.c) void {
 
 /// Cancels execution of a query if `cancelExecAtom` is set to true in a
 /// different thread.
-fn cancelExecution(io: Io, mgr: *ConnManager, stmt: *c.AdbcStatement) !void {
+fn cancelExecution(io: Io, conn: *ConnectionIo, stmt: *c.AdbcStatement) !void {
     while (!cancelExecAtom.load(.acquire)) {
         try io.sleep(Io.Duration.fromMilliseconds(1), .real);
     }
 
     // We got a request for cancelation. Clean up the running query
-    try checkAdbc(c.AdbcStatementCancel(stmt, &mgr.err));
+    try err.checkAdbc(c.AdbcStatementCancel(stmt, &conn.err));
+}
+
+/// Read an ArrowArrayStream into a storage buffer
+pub fn readStream(
+    alloc: Allocator,
+    stream: *c.ArrowArrayStream,
+    buffer: *ArrowStreamBuffer
+) anyerror!void {
+    const getSchema = stream.get_schema orelse return error.AdbcLibError;
+    const getNext = stream.get_next orelse return error.AdbcLibError;
+
+    try err.checkArrowStream(getSchema(stream, &buffer.schema));
+
+    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
+    while (getNext(stream, &batch) == 0) {
+        if (batch.release == null) break;
+
+        if (!buffer.hasCapacity()) {
+            if (!buffer.canResize()) {
+                break;
+            }
+            try buffer.resize(alloc);
+        }
+
+        buffer.add(batch);
+    }
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

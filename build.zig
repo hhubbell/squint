@@ -131,6 +131,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize
     });
 
+    const adbc_wrap = b.createModule(.{
+        .root_source_file = b.path("src/adbc/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = t.mod },
+            .{ .name = "date", .module = date },
+        },
+    });
+
     const options = b.addOptions();
     options.addOption(
         std.SemanticVersion,
@@ -144,6 +154,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "c", .module = t.mod },
+            .{ .name = "adbc", .module = adbc_wrap },
             .{ .name = "date", .module = date },
             .{ .name = "build_options", .module = options.createModule() }
         },
