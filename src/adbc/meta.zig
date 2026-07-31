@@ -213,12 +213,7 @@ pub fn extractValue(
             // Arrow DATE32: int32_t days since UNIX Epoch
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
             const dt = date.DateTime.fromEpochDays(val);
-            return std.fmt.bufPrint(buf,
-                "{d:0>4}-{d:0>2}-{d:0>2}", .{
-                    dt.year,
-                    dt.month,
-                    dt.day
-            }) catch "<err>";
+            return dt.asDateString(buf) catch "<err>";
         },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
@@ -231,17 +226,7 @@ pub fn extractValue(
                 c.NANOARROW_TIME_UNIT_NANO => .fromEpochNano(val),
                 else => unreachable
             };
-            
-            return std.fmt.bufPrint(buf,
-                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
-                    dt.year,
-                    dt.month,
-                    dt.day,
-                    dt.hour,
-                    dt.minute,
-                    dt.second,
-                    dt.millisecond
-                }) catch "<err>";
+            return dt.asDateTimeString(buf) catch "<err>";
         },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
@@ -363,8 +348,8 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
-            // YYYY-MM-DDTHH:MM:SS.mmmZ
-            return 24;
+            // YYYY-MM-DD HH:MM:SS.mmm
+            return 23;
         },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {

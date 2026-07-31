@@ -12,6 +12,66 @@ second: u8,
 millisecond: u16,
 
 
+/// Given a buffer, print the DateTime in YYYY-MM-DD format.
+pub fn asDateString(dt: Self, buf: []u8) ![]u8 {
+    return std.fmt.bufPrint(buf,
+        "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            dt.year,
+            dt.month,
+            dt.day
+        });
+}
+
+test "asDateString" {
+    var buf: [10]u8 = undefined;
+    const epoch: Self = .{
+        .year=1970,
+        .month=1,
+        .day=1,
+        .hour=0,
+        .minute=0,
+        .second=0,
+        .millisecond=0
+    };
+
+    try std.testing.expectEqualStrings(
+        "1970-01-01",
+        try epoch.asDateString(&buf)
+    );
+}
+
+/// Given a buffer, print the DateTime in YYYY-MM-DD HH:MM:SS.mmm format.
+pub fn asDateTimeString(dt: Self, buf: []u8) ![]u8 {
+    return std.fmt.bufPrint(buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{
+            dt.year,
+            dt.month,
+            dt.day,
+            dt.hour,
+            dt.minute,
+            dt.second,
+            dt.millisecond
+        });
+}
+
+test "asDateTimeString" {
+    var buf: [23]u8 = undefined;
+    const epoch: Self = .{
+        .year=1970,
+        .month=1,
+        .day=1,
+        .hour=12,
+        .minute=13,
+        .second=14,
+        .millisecond=987
+    };
+
+    try std.testing.expectEqualStrings(
+        "1970-01-01 12:13:14.987",
+        try epoch.asDateTimeString(&buf)
+    );
+}
+
 /// Convert a DateTime into the number of days since the UNIX epoch. See
 /// https://howardhinnant.github.io/date_algorithms.html for more details
 pub fn toEpochDays(dt: Self) i64 {
