@@ -17,11 +17,15 @@ pub const ColMetadata = struct {
     color_slots: usize,
     typeof: c.ArrowType,
     // Decimal data
-    decimal_width: ?i32,
-    decimal_precision: ?i32,
-    decimal_scale: ?i32,
+    decimal: ?DecimalFmt,
     // Time data
     time_unit: c.ArrowTimeUnit
+};
+
+const DecimalFmt = struct {
+    width: i32,
+    precision: i32,
+    scale: i32
 };
 
 const ColFmt = struct {
@@ -120,8 +124,11 @@ pub fn produceBatchMaximums(
             .col_i = j};
 
         for (0..@intCast(col.*.length)) |k| {
-            c_fmt.width = @max(c_fmt.width, slotWidth(&header[j], col, k));
-            c_fmt.bytes = @max(c_fmt.bytes, byteWidth(&header[j], col, k));
+            const sw = slotWidth(&header[j], col, k) catch return error.Canceled;
+            const bw = byteWidth(&header[j], col, k) catch return error.Canceled;
+
+            c_fmt.width = @max(c_fmt.width, sw);
+            c_fmt.bytes = @max(c_fmt.bytes, bw);
             c_fmt.color_slots += @intFromBool(isNull(col, k));
         }
 
@@ -136,25 +143,32 @@ fn getHeader(
     schema: *c.ArrowSchema,
 ) ![]ColMetadata {
     var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
-    const n: usize = @intCast(schema.n_children);
+    const n_cols: usize = @intCast(schema.n_children);
 
-    var result: []ColMetadata = try alloc.alloc(ColMetadata, n);
-    var view: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
+    var result: []ColMetadata = try alloc.alloc(ColMetadata, n_cols);
 
-    for (0..n) |i| {
+    for (0..n_cols) |i| {
         const col: *c.ArrowSchema = schema.children[i];
         const name: []const u8 = if (col.*.name) |s| std.mem.span(s) else "column";
 
+        var view: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
         try err.checkNanoArrow(c.ArrowSchemaViewInit(&view, col, &a_err));
 
         // Store the decimal storage width if we are dealing with a DECIMAL
-        const dec_width: ?i32 = switch(view.type) {
-            c.NANOARROW_TYPE_DECIMAL32 => 32,
-            c.NANOARROW_TYPE_DECIMAL64 => 64,
-            c.NANOARROW_TYPE_DECIMAL128 => 128,
-            c.NANOARROW_TYPE_DECIMAL256 => 256,
-            else => null
-        };
+        var dec: ?DecimalFmt = null;
+        if (isDecimal(&view)) {
+            dec = .{
+                .width = switch(view.type) {
+                    c.NANOARROW_TYPE_DECIMAL32 => 32,
+                    c.NANOARROW_TYPE_DECIMAL64 => 64,
+                    c.NANOARROW_TYPE_DECIMAL128 => 128,
+                    c.NANOARROW_TYPE_DECIMAL256 => 256,
+                    else => unreachable
+                },
+                .precision = view.decimal_precision,
+                .scale = view.decimal_scale
+            };
+        }
 
         result[i] = .{
             .name = name,
@@ -162,10 +176,9 @@ fn getHeader(
             .bytes = name.len,
             .color_slots = 0,
             .typeof = view.type,
-            .decimal_width = dec_width,
-            .decimal_precision = view.decimal_precision,
-            .decimal_scale = view.decimal_scale,
-            .time_unit = view.time_unit};
+            .decimal = dec,
+            .time_unit = view.time_unit
+        };
     }
 
     return result;
@@ -259,26 +272,19 @@ pub fn extractValue(
         c.NANOARROW_TYPE_DECIMAL256 => {
             var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
-                meta.decimal_width.?,
-                meta.decimal_precision.?,
-                meta.decimal_scale.?);
+                meta.decimal.?.width,
+                meta.decimal.?.precision,
+                meta.decimal.?.scale);
+            c.ArrowArrayViewGetDecimalUnsafe(view, row, &dec);
 
             var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});
             c.ArrowBufferInit(&val);
 
-            c.ArrowArrayViewGetDecimalUnsafe(view, row, &dec);
-
-            // FIXME:
-            //  1. Error handling
-            //  2. How many allocations does this make?
-            //try err.checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
-            _ = c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
+            err.checkNanoArrow(c.ArrowDecimalAppendStringToBuffer(&dec, &val)) catch return "<err>";
 
             const val_len: usize = @intCast(val.size_bytes);
             const val_str: []const u8 = val.data[0..val_len];
             return std.fmt.bufPrint(buf, "{s}", .{val_str}) catch "<err>";
-
-
         },
         else => return "<unknown>"
     }
@@ -296,7 +302,7 @@ pub fn isNull(col: *c.ArrowArrayView, idx: u64) bool {
 /// ArrowSchema.type instead. The storage_type may lose fidelity if
 /// the schema type is backed by a less descriptive type, e.g. DATE
 pub fn isNumeric(col: *c.ArrowArrayView) bool {
-    switch (col.storage_type) {
+    return switch (col.storage_type) {
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
@@ -313,13 +319,23 @@ pub fn isNumeric(col: *c.ArrowArrayView) bool {
         c.NANOARROW_TYPE_DECIMAL32,
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
-        c.NANOARROW_TYPE_DECIMAL256 => return true,
-        else => return false
-    }
+        c.NANOARROW_TYPE_DECIMAL256 => true,
+        else => false
+    };
+}
+
+fn isDecimal(col: *c.ArrowSchemaView) bool {
+    return switch (col.type) {
+            c.NANOARROW_TYPE_DECIMAL32,
+            c.NANOARROW_TYPE_DECIMAL64,
+            c.NANOARROW_TYPE_DECIMAL128,
+            c.NANOARROW_TYPE_DECIMAL256 => true,
+        else => false
+    };
 }
 
 /// FIXME Cannot handle all data types
-fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
+fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
     const row: i64 = @intCast(idx);
 
     if (isNull(col, idx)) {
@@ -338,7 +354,7 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_UINT32,
         c.NANOARROW_TYPE_UINT64 => {
             const val: u64 = c.ArrowArrayViewGetUIntUnsafe(col, row);
-            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            const str = try std.fmt.bufPrint(&buf, "{d}", .{val});
             return str.len;
         },
         c.NANOARROW_TYPE_DATE32 => {
@@ -353,12 +369,12 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
             const val: f128 = c.ArrowArrayViewGetDoubleUnsafe(col, row);
-            const str = std.fmt.bufPrint(&buf, "{d:.4}", .{val}) catch "<err>";
+            const str = try std.fmt.bufPrint(&buf, "{d:.4}", .{val});
             return str.len;
         },
         c.NANOARROW_TYPE_BOOL => {
             const val: i64 = c.ArrowArrayViewGetIntUnsafe(col, row);
-            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "<err>";
+            const str = try std.fmt.bufPrint(&buf, "{d}", .{val});
             return str.len;
         },
         c.NANOARROW_TYPE_STRING,
@@ -377,20 +393,15 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
         c.NANOARROW_TYPE_DECIMAL256 => {
             var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
-                meta.decimal_width.?,
-                meta.decimal_precision.?,
-                meta.decimal_scale.?);
+                meta.decimal.?.width,
+                meta.decimal.?.precision,
+                meta.decimal.?.scale);
+            c.ArrowArrayViewGetDecimalUnsafe(col, row, &dec);
 
             var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});
             c.ArrowBufferInit(&val);
 
-            c.ArrowArrayViewGetDecimalUnsafe(col, row, &dec);
-
-            // FIXME:
-            //  1. Error handling
-            //  2. How many allocations does this make?
-            //try err.checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val));
-            _ = c.ArrowDecimalAppendDigitsToBuffer(&dec, &val);
+            try err.checkNanoArrow(c.ArrowDecimalAppendDigitsToBuffer(&dec, &val)) ;
 
             return @intCast(val.size_bytes);
         },
@@ -401,11 +412,11 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
 /// Basically useless at this point
 ///
 /// DEPRECATED
-fn byteWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) usize {
+fn byteWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
     // This only makes sense if we ever color an entire column. adding
     // the extra bytes for values in a column gets weird when some values
     // are colorable and some not. Nulls are the example. 
     const color: usize = 0;
 
-    return slotWidth(meta, col, idx) + color;
+    return try slotWidth(meta, col, idx) + color;
 }
