@@ -228,6 +228,47 @@ pub fn extractValue(
             };
             return dt.asDateTimeString(buf) catch "<err>";
         },
+        c.NANOARROW_TYPE_TIME32,
+        c.NANOARROW_TYPE_TIME64 => {
+            const val = c.ArrowArrayViewGetIntUnsafe(view, row);
+            const ts: date.Time = switch (meta.time_unit) {
+                c.NANOARROW_TIME_UNIT_SECOND => .fromMidnightSec(@intCast(val)),
+                c.NANOARROW_TIME_UNIT_MILLI => .fromMidnightMs(@intCast(val)),
+                c.NANOARROW_TIME_UNIT_MICRO => .fromMidnightMicro(@intCast(val)),
+                c.NANOARROW_TIME_UNIT_NANO => .fromMidnightNano(@intCast(val)),
+                else => unreachable
+            };
+            return ts.asTimeString(buf) catch "<err>";
+        },
+        c.NANOARROW_TYPE_INTERVAL_MONTHS,
+        c.NANOARROW_TYPE_INTERVAL_DAY_TIME,
+        c.NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO => |t| {
+            var inter: c.ArrowInterval = std.mem.zeroInit(c.ArrowInterval, .{});
+            c. ArrowIntervalInit(&inter, t);
+            c. ArrowArrayViewGetIntervalUnsafe(view, row, &inter);
+
+            switch (t) {
+                c.NANOARROW_TYPE_INTERVAL_MONTHS => {
+                    return std.fmt.bufPrint(buf, "{d} months", .{
+                        inter.months
+                    }) catch "<err>";
+                },
+                c.NANOARROW_TYPE_INTERVAL_DAY_TIME => {
+                    return std.fmt.bufPrint(buf, "{d} days {d} ms", .{
+                        inter.days,
+                        inter.ms
+                    }) catch "<err>";
+                },
+                c.NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO => {
+                    return std.fmt.bufPrint(buf, "{d} months {d} days {d} ns", .{
+                        inter.months,
+                        inter.days,
+                        inter.ns
+                    }) catch "<err>";
+                },
+                else => unreachable
+            }
+        },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
             const val = c.ArrowArrayViewGetDoubleUnsafe(view, row);
@@ -350,6 +391,39 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         c.NANOARROW_TYPE_TIMESTAMP => {
             // YYYY-MM-DD HH:MM:SS.mmm
             return 23;
+        },
+        c.NANOARROW_TYPE_TIME32,
+        c.NANOARROW_TYPE_TIME64 => {
+            // HH:MM:SS.mmm
+            return 12;
+        },
+        c.NANOARROW_TYPE_INTERVAL_MONTHS,
+        c.NANOARROW_TYPE_INTERVAL_DAY_TIME,
+        c.NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO => |t| {
+            // TODO: We can move some of this to the `date` module to better
+            // handle the representation of intervals in different grains
+            var inter: c.ArrowInterval = std.mem.zeroInit(c.ArrowInterval, .{});
+            c. ArrowIntervalInit(&inter, t);
+            c. ArrowArrayViewGetIntervalUnsafe(col, row, &inter);
+
+            const str = switch (t) {
+                c.NANOARROW_TYPE_INTERVAL_MONTHS =>
+                    try std.fmt.bufPrint(&buf, "{d} months", .{inter.months}),
+                c.NANOARROW_TYPE_INTERVAL_DAY_TIME =>
+                    try std.fmt.bufPrint(&buf, "{d} days {d} ms", .{
+                        inter.days,
+                        inter.ms
+                    }),
+                c.NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO =>
+                    try std.fmt.bufPrint(&buf, "{d} months {d} days {d} ns", .{
+                        inter.months,
+                        inter.days,
+                        inter.ns
+                    }),
+                else => unreachable
+            };
+
+            return str.len;
         },
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
