@@ -118,9 +118,10 @@ pub const MessageBuffer = struct {
     }
 
     fn lastErr(self: *Self) ?Message {
+        // FIXME: This breaks when we roll over
         var i: usize = self.head;
 
-        while (i >= 0) {
+        while (i > 0) {
             if (self.stack[i].?.isErr()) {
                 break;
             }

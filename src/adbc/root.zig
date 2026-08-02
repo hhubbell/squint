@@ -62,6 +62,18 @@ pub const ConnectionIo = struct {
        try err.checkAdbc(c.AdbcDatabaseRelease(&self.db, &self.err));
     }
 
+    pub fn errPtr(self: *Self) *c.AdbcError {
+        // If an error already exists, free it before returning a fresh
+        // struct pointer. I think this may warrant rethinking how error
+        // handling happens generally. E.g. an independent error wrapper
+        // with explicit init
+        if (self.err.release) |release| release(&self.err);
+
+        self.err = std.mem.zeroInit(c.AdbcError, .{});
+
+        return &self.err;
+    }
+
     pub fn lastErrMsg(self: *Self) []const u8 {
         if (self.err.message != null) {
             return std.mem.span(self.err.message);
@@ -77,10 +89,10 @@ pub fn connect(
     conn: *ConnectionIo,
     cfg: AdbcConfig
 ) !void {
-    try err.checkAdbc(c.AdbcDatabaseNew(&conn.db, &conn.err));
+    try err.checkAdbc(c.AdbcDatabaseNew(&conn.db, conn.errPtr()));
     try err.checkAdbc(c.AdbcDriverManagerDatabaseSetLoadFlags(&conn.db,
         c.ADBC_LOAD_FLAG_DEFAULT,
-        &conn.err
+        conn.errPtr()
     ));
 
     inline for (@typeInfo(@TypeOf(cfg)).@"struct".field_names) |f| {
@@ -96,14 +108,14 @@ pub fn connect(
             try err.checkAdbc(c.AdbcDatabaseSetOption(&conn.db,
                 @ptrCast(c_f),
                 @ptrCast(c_v),
-                &conn.err));
+                conn.errPtr()));
         }
     }
 
-    try err.checkAdbc(c.AdbcDatabaseInit(&conn.db, &conn.err));
+    try err.checkAdbc(c.AdbcDatabaseInit(&conn.db, conn.errPtr()));
 
-    try err.checkAdbc(c.AdbcConnectionNew(&conn.conn, &conn.err));
-    try err.checkAdbc(c.AdbcConnectionInit(&conn.conn, &conn.db, &conn.err));
+    try err.checkAdbc(c.AdbcConnectionNew(&conn.conn, conn.errPtr()));
+    try err.checkAdbc(c.AdbcConnectionInit(&conn.conn, &conn.db, conn.errPtr()));
 }
 
 pub fn executeWithCancel(
@@ -166,11 +178,11 @@ pub fn prepareStatement(
 ) !c.AdbcStatement {
     var stmt: c.AdbcStatement = std.mem.zeroInit(c.AdbcStatement, .{});
 
-    try err.checkAdbc(c.AdbcStatementNew(&conn.conn, &stmt, &conn.err));
+    try err.checkAdbc(c.AdbcStatementNew(&conn.conn, &stmt, conn.errPtr()));
 
     // NOTE: Errors at this point usually indicate user-inflicted problems,
     // however, it will up to the caller how best to handle them.
-    try err.checkAdbc(c.AdbcStatementSetSqlQuery(&stmt, c_query, &conn.err));
+    try err.checkAdbc(c.AdbcStatementSetSqlQuery(&stmt, c_query, conn.errPtr()));
 
     return stmt;
 }
@@ -185,7 +197,7 @@ fn executeStatement(
         stmt,
         stream,
         &conn.rows_affected,
-        &conn.err
+        conn.errPtr()
     ));
 }
 
@@ -203,7 +215,7 @@ fn cancelExecution(io: Io, conn: *ConnectionIo, stmt: *c.AdbcStatement) !void {
     }
 
     // We got a request for cancelation. Clean up the running query
-    try err.checkAdbc(c.AdbcStatementCancel(stmt, &conn.err));
+    try err.checkAdbc(c.AdbcStatementCancel(stmt, conn.errPtr()));
 }
 
 /// Read an ArrowArrayStream into a storage buffer
@@ -231,6 +243,18 @@ pub fn readStream(
         buffer.add(batch);
     }
 }
+
+/// Discover objects from a connection
+pub fn discoverObjects(conn: *ConnectionIo) !c.ArrowArrayStream {
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+
+    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn,
+        c.ADBC_OBJECT_DEPTH_ALL, null, null, null, null, null,
+        &stream, conn.errPtr()));
+
+    return stream;
+}
+
 
 test {
     std.testing.refAllDecls(@This());
