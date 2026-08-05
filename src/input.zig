@@ -17,6 +17,8 @@ pub const readline = c.linenoise;
 pub const addHistory = c.linenoiseHistoryAdd;
 pub const setCompletionCallback = c.linenoiseSetCompletionCallback;
 
+pub var catalog: ?adbc.ConnectionCatalog = null;
+
 pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
     conn: *adbc.ConnectionIo,
@@ -218,6 +220,12 @@ const InputContext = struct {
         return null;
     }
 
+    pub fn expectObjectNext(self: Self) bool {
+        if (self.last_word == null) return false;
+
+        return std.mem.eql(u8, self.last_word.?, "from")
+            or std.mem.eql(u8, self.last_word.?, "join");
+    }
 };
 
 
@@ -255,6 +263,21 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
                     c.linenoiseAddCompletion(compl, @ptrCast(tag));
                 }
             }
+        }
+
+        return;
+    }
+
+    // TODO
+    if (inpt_ctx.expectObjectNext()) {
+        for (catalog.?.catalogs()) |obj| {
+            const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
+                u8,
+                &.{ inpt_ctx.input.lhs, obj.name },
+                '\x00'
+            ) catch return;
+            defer gpa.free(req);
+            c.linenoiseAddCompletion(compl, @ptrCast(req));
         }
 
         return;

@@ -3,6 +3,7 @@ const c = @import("c");
 
 pub const err = @import("err.zig");
 pub const meta = @import("meta.zig");
+pub const schema = @import("schema.zig");
 
 pub const calcColumnMetadata = meta.calcColumnMetadata;
 pub const ColMetadata = meta.ColMetadata;
@@ -80,6 +81,75 @@ pub const ConnectionIo = struct {
         } else {
             return "No error message provided.";
         }
+    }
+};
+
+pub const ConnectionCatalog = struct {
+    const Self = @This();
+    const Filter = struct {
+        catalog: ?[]const u8 = null,
+        schema: ?[]const u8 = null,
+        table: ?[]const u8 = null
+    };
+
+    items: []schema.Catalog,
+
+    pub fn deinit(self: Self, gpa: Allocator) void {
+        for (self.items) |*i| i.deinit(gpa);
+        gpa.free(self.items);
+    }
+
+    pub fn catalogs(self: *Self) []schema.Catalog {
+        return self.items;
+    }
+
+    pub fn schemas(
+        self: *Self,
+        gpa: Allocator,
+        filter: Self.Filter
+    ) ![]schema.Schema {
+        var collector: std.ArrayList(schema.Schema) = .empty;
+        defer collector.deinit(gpa);
+
+        for (self.catalogs()) |obj| {
+            var match: bool = true;
+
+            if (filter.catalog != null) {
+                match = std.mem.eql(u8, obj.name, filter.catalog.?);
+            }
+
+            if (match) {
+                try collector.appendSlice(gpa, obj.children);
+            }
+        }
+
+        return try collector.toOwnedSlice(gpa);
+    }
+
+    pub fn tables(
+        self: *Self,
+        gpa: Allocator,
+        filter: Self.Filter
+    ) ![]schema.Table {
+        var collector: std.ArrayList(schema.Table) = .empty;
+        defer collector.deinit(gpa);
+
+        const parents = try self.schemas(gpa, filter);
+        defer gpa.free(parents);
+
+        for (parents) |obj| {
+            var match: bool = true;
+
+            if (filter.schema != null) {
+                match = std.mem.eql(u8, obj.name, filter.schema.?);
+            }
+
+            if (match) {
+                try collector.appendSlice(gpa, obj.children);
+            }
+        }
+
+        return try collector.toOwnedSlice(gpa);
     }
 };
 
@@ -245,14 +315,27 @@ pub fn readStream(
 }
 
 /// Discover objects from a connection
-pub fn discoverObjects(conn: *ConnectionIo) !c.ArrowArrayStream {
-    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
+    return .{ .items = try schema.readCatalog(gpa, conn) };
 
-    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn,
-        c.ADBC_OBJECT_DEPTH_ALL, null, null, null, null, null,
-        &stream, conn.errPtr()));
+    //for (cat.items) |w| {
+    //    std.debug.print("{s}\n", .{w.name});
+    //    for (w.children) |x| {
+    //        std.debug.print("  {s}\n", .{x.name});
+    //        for (x.children) |y| {
+    //            std.debug.print("    {s}\n", .{y.name});
+    //            for (y.children) |z| {
+    //                std.debug.print("      {s}\n", .{z.name});
+    //            }
+    //        }
+    //    }
+    //}
 
-    return stream;
+    //const x = try cat.tables(gpa, .{.catalog = "oil"});
+    //defer gpa.free(x);
+    //for (x) |t| {
+    //    std.debug.print("{s}\n", .{t.name});
+    //}
 }
 
 
