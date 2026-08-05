@@ -93,10 +93,31 @@ pub const ConnectionCatalog = struct {
     };
 
     items: []schema.Catalog,
+    current_database: []const u8,
+    current_schema: []const u8,
+
+    pub fn init(gpa: Allocator, conn: *ConnectionIo) !Self {
+        // Null fallbacks are currently SQLite specific. This needs to be tested
+        // against other drivers where the concept of a database/schema aren't
+        // really a thing.
+        const db = try getOption(gpa, conn, c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG)
+            orelse try gpa.dupe(u8, "main");
+        const sch = try getOption(gpa, conn, c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA)
+            orelse try gpa.dupe(u8, "none");
+
+        return .{
+            .items = try schema.readCatalog(gpa, conn),
+            .current_database = db,
+            .current_schema = sch
+        };  
+    }
 
     pub fn deinit(self: Self, gpa: Allocator) void {
         for (self.items) |*i| i.deinit(gpa);
         gpa.free(self.items);
+
+        gpa.free(self.current_database);
+        gpa.free(self.current_schema);
     }
 
     pub fn catalogs(self: *Self) []schema.Catalog {
@@ -150,6 +171,34 @@ pub const ConnectionCatalog = struct {
         }
 
         return try collector.toOwnedSlice(gpa);
+    }
+
+    pub fn currentConnCatalog(self: *Self) !schema.Catalog {
+        for (self.items) |obj| {
+            if (std.mem.eql(u8, obj.name, self.current_database)) {
+                return obj;
+            }
+        }
+
+        return error.InvalidConnectionOption;
+    }
+
+    pub fn currentConnSchema(self: *Self) !schema.Schema {
+        const parent: schema.Catalog = try self.currentConnCatalog();
+
+        for (parent.children) |obj| {
+            if (std.mem.eql(u8, obj.name, self.current_schema)) {
+                return obj;
+            }
+        }
+
+        return error.InvalidConnectionOption;
+    }
+
+    pub fn currentConnTables(self: *Self) ![]schema.Table {
+        const parent: schema.Schema = try self.currentConnSchema();
+
+        return parent.children;
     }
 };
 
@@ -242,6 +291,35 @@ pub fn executeWithCancel(
 
 }
 
+pub fn getOption(gpa: Allocator, conn: *ConnectionIo, opt: []const u8) !?[]const u8 {
+    var opt_len: usize = 0;
+
+    err.checkAdbc(c.AdbcConnectionGetOption(&conn.conn,
+        @ptrCast(opt),
+        null,
+        &opt_len,
+        conn.errPtr()
+    )) catch return null;
+
+    if (opt_len == 0) {
+        return error.UnhandledMissingCatalog;
+    }
+
+    var opt_buf: []u8 = try gpa.alloc(u8, opt_len);
+    defer gpa.free(opt_buf);
+
+    err.checkAdbc(c.AdbcConnectionGetOption(&conn.conn,
+        @ptrCast(opt),
+        opt_buf.ptr,
+        &opt_len,
+        conn.errPtr()
+    )) catch return null;
+
+    // NOTE: opt_buf is a null-terminated char buffer, so take the
+    // entire buffer, minus the null terminator
+    return try gpa.dupe(u8, opt_buf[0..opt_len - 1]);
+}
+
 pub fn prepareStatement(
     conn: *ConnectionIo,
     c_query: [*c]const u8
@@ -316,7 +394,8 @@ pub fn readStream(
 
 /// Discover objects from a connection
 pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
-    return .{ .items = try schema.readCatalog(gpa, conn) };
+
+    return ConnectionCatalog.init(gpa, conn);
 
     //for (cat.items) |w| {
     //    std.debug.print("{s}\n", .{w.name});
@@ -329,12 +408,6 @@ pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
     //            }
     //        }
     //    }
-    //}
-
-    //const x = try cat.tables(gpa, .{.catalog = "oil"});
-    //defer gpa.free(x);
-    //for (x) |t| {
-    //    std.debug.print("{s}\n", .{t.name});
     //}
 }
 

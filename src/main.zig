@@ -146,7 +146,11 @@ pub fn main(init: std.process.Init) !void {
         return error.FatalStartupError;
     }
 
-    input.catalog = try adbc.discoverObjects(gpa, &conn);
+    input.catalog = adbc.discoverObjects(gpa, &conn) catch {
+        msg.addFatalErr(conn.lastErrMsg());
+        try msg.printLastErr(&stderr.interface);
+        return;
+    };
     defer input.catalog.?.deinit(gpa);
 
     input.setCompletionCallback(input.completionCallback);

@@ -112,6 +112,8 @@ fn readList(
             continue;
         }
 
+        std.debug.print("{any} {s}\n", .{T, name_str});
+
         if (@hasField(T, "children")) {
             const next_list: *c.ArrowArrayView = list.children[1];
 
