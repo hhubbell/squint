@@ -3,12 +3,12 @@ const c = @import("c");
 
 pub const err = @import("err.zig");
 pub const meta = @import("meta.zig");
-pub const schema = @import("schema.zig");
 
 pub const calcColumnMetadata = meta.calcColumnMetadata;
 pub const ColMetadata = meta.ColMetadata;
 
 pub const ArrowStreamBuffer = @import("StreamBuffer.zig");
+pub const ConnectionCatalog = @import("ConnectionCatalog.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -81,124 +81,6 @@ pub const ConnectionIo = struct {
         } else {
             return "No error message provided.";
         }
-    }
-};
-
-pub const ConnectionCatalog = struct {
-    const Self = @This();
-    const Filter = struct {
-        catalog: ?[]const u8 = null,
-        schema: ?[]const u8 = null,
-        table: ?[]const u8 = null
-    };
-
-    items: []schema.Catalog,
-    current_database: []const u8,
-    current_schema: []const u8,
-
-    pub fn init(gpa: Allocator, conn: *ConnectionIo) !Self {
-        // Null fallbacks are currently SQLite specific. This needs to be tested
-        // against other drivers where the concept of a database/schema aren't
-        // really a thing.
-        const db = try getOption(gpa, conn, c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG)
-            orelse try gpa.dupe(u8, "main");
-        const sch = try getOption(gpa, conn, c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA)
-            orelse try gpa.dupe(u8, "none");
-
-        return .{
-            .items = try schema.readCatalog(gpa, conn),
-            .current_database = db,
-            .current_schema = sch
-        };  
-    }
-
-    pub fn deinit(self: Self, gpa: Allocator) void {
-        for (self.items) |*i| i.deinit(gpa);
-        gpa.free(self.items);
-
-        gpa.free(self.current_database);
-        gpa.free(self.current_schema);
-    }
-
-    pub fn catalogs(self: *Self) []schema.Catalog {
-        return self.items;
-    }
-
-    pub fn schemas(
-        self: *Self,
-        gpa: Allocator,
-        filter: Self.Filter
-    ) ![]schema.Schema {
-        var collector: std.ArrayList(schema.Schema) = .empty;
-        defer collector.deinit(gpa);
-
-        for (self.catalogs()) |obj| {
-            var match: bool = true;
-
-            if (filter.catalog != null) {
-                match = std.mem.eql(u8, obj.name, filter.catalog.?);
-            }
-
-            if (match) {
-                try collector.appendSlice(gpa, obj.children);
-            }
-        }
-
-        return try collector.toOwnedSlice(gpa);
-    }
-
-    pub fn tables(
-        self: *Self,
-        gpa: Allocator,
-        filter: Self.Filter
-    ) ![]schema.Table {
-        var collector: std.ArrayList(schema.Table) = .empty;
-        defer collector.deinit(gpa);
-
-        const parents = try self.schemas(gpa, filter);
-        defer gpa.free(parents);
-
-        for (parents) |obj| {
-            var match: bool = true;
-
-            if (filter.schema != null) {
-                match = std.mem.eql(u8, obj.name, filter.schema.?);
-            }
-
-            if (match) {
-                try collector.appendSlice(gpa, obj.children);
-            }
-        }
-
-        return try collector.toOwnedSlice(gpa);
-    }
-
-    pub fn currentConnCatalog(self: *Self) !schema.Catalog {
-        for (self.items) |obj| {
-            if (std.mem.eql(u8, obj.name, self.current_database)) {
-                return obj;
-            }
-        }
-
-        return error.InvalidConnectionOption;
-    }
-
-    pub fn currentConnSchema(self: *Self) !schema.Schema {
-        const parent: schema.Catalog = try self.currentConnCatalog();
-
-        for (parent.children) |obj| {
-            if (std.mem.eql(u8, obj.name, self.current_schema)) {
-                return obj;
-            }
-        }
-
-        return error.InvalidConnectionOption;
-    }
-
-    pub fn currentConnTables(self: *Self) ![]schema.Table {
-        const parent: schema.Schema = try self.currentConnSchema();
-
-        return parent.children;
     }
 };
 
@@ -320,6 +202,79 @@ pub fn getOption(gpa: Allocator, conn: *ConnectionIo, opt: []const u8) !?[]const
     return try gpa.dupe(u8, opt_buf[0..opt_len - 1]);
 }
 
+/// Read an ArrowArrayStream into a storage buffer
+pub fn readStream(
+    alloc: Allocator,
+    stream: *c.ArrowArrayStream,
+    buffer: *ArrowStreamBuffer
+) anyerror!void {
+    const getSchema = stream.get_schema orelse return error.AdbcLibError;
+    const getNext = stream.get_next orelse return error.AdbcLibError;
+
+    try err.checkArrowStream(getSchema(stream, &buffer.schema));
+
+    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
+    while (getNext(stream, &batch) == 0) {
+        if (batch.release == null) break;
+
+        if (!buffer.hasCapacity()) {
+            if (!buffer.canResize()) {
+                break;
+            }
+            try buffer.resize(alloc);
+        }
+
+        buffer.add(batch);
+    }
+}
+
+/// Discover objects from a connection
+pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
+    return ConnectionCatalog.init(gpa, conn);
+}
+
+pub fn readCatalog(
+    gpa: Allocator,
+    conn: *ConnectionIo
+) ![]ConnectionCatalog.Catalog {
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+
+    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn,
+        c.ADBC_OBJECT_DEPTH_ALL, null, null, null, null, null,
+        &stream, conn.errPtr()));
+    defer if (stream.release) |release| release(&stream);
+
+    const getSchema = stream.get_schema orelse return error.AdbcLibError;
+    const getNext = stream.get_next orelse return error.AdbcLibError;
+
+    var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
+
+    try err.checkArrowStream(getSchema(&stream, &schema));
+
+    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+
+    try err.checkArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
+
+    var obj: std.ArrayList(ConnectionCatalog.Catalog) = .empty;
+    defer obj.deinit(gpa);
+
+    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
+    while (getNext(&stream, &batch) == 0) {
+        if (batch.release == null) break;
+
+        try err.checkArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
+        const content = try ConnectionCatalog.readCatalogArrayList(
+            ConnectionCatalog.Catalog,
+            gpa, &view, 0, view.length);
+        defer gpa.free(content);
+
+        try obj.appendSlice(gpa, content);
+    }
+ 
+    return obj.toOwnedSlice(gpa);
+}
+
 pub fn prepareStatement(
     conn: *ConnectionIo,
     c_query: [*c]const u8
@@ -365,52 +320,6 @@ fn cancelExecution(io: Io, conn: *ConnectionIo, stmt: *c.AdbcStatement) !void {
     // We got a request for cancelation. Clean up the running query
     try err.checkAdbc(c.AdbcStatementCancel(stmt, conn.errPtr()));
 }
-
-/// Read an ArrowArrayStream into a storage buffer
-pub fn readStream(
-    alloc: Allocator,
-    stream: *c.ArrowArrayStream,
-    buffer: *ArrowStreamBuffer
-) anyerror!void {
-    const getSchema = stream.get_schema orelse return error.AdbcLibError;
-    const getNext = stream.get_next orelse return error.AdbcLibError;
-
-    try err.checkArrowStream(getSchema(stream, &buffer.schema));
-
-    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(stream, &batch) == 0) {
-        if (batch.release == null) break;
-
-        if (!buffer.hasCapacity()) {
-            if (!buffer.canResize()) {
-                break;
-            }
-            try buffer.resize(alloc);
-        }
-
-        buffer.add(batch);
-    }
-}
-
-/// Discover objects from a connection
-pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
-
-    return ConnectionCatalog.init(gpa, conn);
-
-    //for (cat.items) |w| {
-    //    std.debug.print("{s}\n", .{w.name});
-    //    for (w.children) |x| {
-    //        std.debug.print("  {s}\n", .{x.name});
-    //        for (x.children) |y| {
-    //            std.debug.print("    {s}\n", .{y.name});
-    //            for (y.children) |z| {
-    //                std.debug.print("      {s}\n", .{z.name});
-    //            }
-    //        }
-    //    }
-    //}
-}
-
 
 test {
     std.testing.refAllDecls(@This());

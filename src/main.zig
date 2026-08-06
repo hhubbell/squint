@@ -32,7 +32,13 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
     if (parms.config) |x| {
         if (x.driver) |d| {
-            try writer.print("Driver \"{s}\"\n", .{d});
+            try writer.print("Driver \"{s}\"", .{d});
+
+            if (x.uri) |u| {
+                try writer.print(" | Uri \"{s}\"", .{u});
+            }
+
+            try writer.print("\n", .{});
         } else {
             try writer.print("Profile \"{s}\"\n", .{x.profile.?});
         }

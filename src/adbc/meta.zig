@@ -184,7 +184,6 @@ fn getHeader(
     return result;
 }
 
-
 pub fn extractValue(
     meta: *ColMetadata,
     buf: []u8,
@@ -479,3 +478,4 @@ fn byteWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
 
     return try slotWidth(meta, col, idx) + color;
 }
+

@@ -270,7 +270,7 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
 
     // TODO
     if (inpt_ctx.expectObjectNext()) {
-        const objects: []adbc.schema.Table = catalog.?.currentConnTables() catch return;
+        const objects: []adbc.ConnectionCatalog.Table = catalog.?.currentConnTables() catch return;
 
         for (objects) |obj| {
             const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
