@@ -35,31 +35,63 @@ const ColFmt = struct {
     col_i: usize
 };
 
+const BufferIndexTuple = struct {
+    const Self = @This();
+
+    buffer_i: usize,
+    header_i: usize,
+
+    pub fn initSlice(gpa: Allocator, buffers: usize, columns: usize) ![]Self {
+        var tuples = try gpa.alloc(Self, buffers * columns);
+        const off: usize = @divFloor(tuples.len, buffers);
+        
+        for (0..buffers) |i| {
+            for (0..columns) |j| {
+                tuples[off * i + j].buffer_i = i;
+                tuples[off * i + j].header_i = j;
+            }
+        }
+
+        return tuples;
+    }
+};
 
 /// Generate a slice of ColMetadata
 pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
     const header = try getHeader(alloc, &buffer.schema);
 
-    //const cols: usize = header.len;
-    const chunks: usize = header.len * buffer.filled;
+    const indexes = try BufferIndexTuple.initSlice(alloc, buffer.filled, header.len);
+    defer alloc.free(indexes);
 
-    const q_buf = try alloc.alloc(ColFmt, chunks);
+    const n_tasks: usize = indexes.len;
+
+    // TODO: Does the queue have to be the size of the total number of items?
+    // Or should we keep it smaller and some threads will be blocked until the
+    // consumer can clear them out?
+    const q_buf = try alloc.alloc(ColFmt, n_tasks);
     defer alloc.free(q_buf);
 
     var queue: Io.Queue(ColFmt) = .init(q_buf);
 
     var consumer = try io.concurrent(consumeResult, .{
-        io, &queue, chunks, header
+        io, &queue, n_tasks, header
     });
     defer _ = consumer.cancel(io) catch {};
 
     var grp: Io.Group = .init;
     defer grp.cancel(io);
 
-    for (0..buffer.filled) |i| {
+    const threads: usize = @min(buffer.filled, 16);
+    const chunks: usize = try std.math.divCeil(usize, n_tasks, threads);
+
+    for (0..threads) |i| {
+        const beg: usize = i * chunks;
+        const end: usize = @min((i + 1) * chunks, n_tasks);
+
+        const chunk_idx = indexes[beg..end];
 
         grp.concurrent(io, produceBatchMaximums, .{
-            io, &queue, i, buffer, header
+            io, &queue, chunk_idx, buffer, header
         }) catch |e| {
             _ = try consumer.cancel(io);
             return e;
@@ -78,11 +110,12 @@ fn consumeResult(
     count: usize,
     header: []ColMetadata
 ) !void {
+    // TODO: Rather than iterating over a known fixed number of results,
+    // could we instead just keep pulling from the queue until the queue
+    // is closed?
     for (0..count) |_| {
         const res = try queue.getOne(io);
         const j = res.col_i;
-
-        //std.debug.print("{d}, {d}, {d}\n", .{header.len, count, j});
 
         header[j].width = @max(header[j].width, res.width);
         header[j].bytes = @max(header[j].bytes, res.bytes);
@@ -93,39 +126,42 @@ fn consumeResult(
 pub fn produceBatchMaximums(
     io: Io,
     queue: *Io.Queue(ColFmt),
-    index: usize,
+    indexes: []BufferIndexTuple,
     buffer: *ArrowStreamBuffer,
     //FIXME:
     header: []ColMetadata
 ) !void {
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buffer.schema, &buffer.err)) catch {
-        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
-        std.debug.print("Process likely deadlocked\n", .{});
-        return error.Canceled;
-    };
+    for (indexes) |i| {
+        var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+        err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
+            &view,
+            &buffer.schema,
+            &buffer.err
+        )) catch {
+            std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+            std.debug.print("Process likely deadlocked\n", .{});
+            return error.Canceled;
+        };
 
-    var batch: c.ArrowArray = buffer.items[index];
+        var batch: c.ArrowArray = buffer.items[i.buffer_i];
 
-    err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
-        std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
-        std.debug.print("Process likely deadlocked\n", .{});
-        return error.Canceled;
-    };
+        err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
+            std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+            std.debug.print("Process likely deadlocked\n", .{});
+            return error.Canceled;
+        };
 
-    // Each child of the buffer is a column array
-    for (0..@intCast(view.n_children)) |j| {
-        const col = view.children[j];
+        const col = view.children[i.header_i];
 
         var c_fmt: ColFmt = .{
             .width = 0,
             .bytes = 0,
             .color_slots = 0,
-            .col_i = j};
+            .col_i = i.header_i};
 
         for (0..@intCast(col.*.length)) |k| {
-            const sw = slotWidth(&header[j], col, k) catch return error.Canceled;
-            const bw = byteWidth(&header[j], col, k) catch return error.Canceled;
+            const sw = slotWidth(&header[i.header_i], col, k) catch return error.Canceled;
+            const bw = byteWidth(&header[i.header_i], col, k) catch return error.Canceled;
 
             c_fmt.width = @max(c_fmt.width, sw);
             c_fmt.bytes = @max(c_fmt.bytes, bw);
