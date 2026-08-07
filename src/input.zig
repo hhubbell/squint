@@ -2,6 +2,7 @@ const std = @import("std");
 const adbc = @import("adbc");
 const c = @import("c");
 
+const format = @import("format.zig");
 const mesg = @import("message.zig");
 
 const Allocator = std.mem.Allocator;
@@ -35,6 +36,9 @@ const DotCommand = struct {
 };
 
 const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
+    .{ ".catalog", DotCommand {
+        .help = "List the connection catalogs",
+        .call = dcCatalogs }},
     .{ ".errors", DotCommand {
         .help = "Print logged error messages",
         .call = dcErrors }},
@@ -81,6 +85,21 @@ fn iterDotCommands() [DotCommandMap.keys().len][]const u8 {
     }.lessThan);
 
     return kcopy;
+}
+
+fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
+    _ = args;
+    var writer = Io.File.stderr().writer(opts.io, &.{});
+    
+    for (catalog.?.catalogs(), 0..) |obj, i| {
+        if (i == catalog.?.current_database) {
+            try writer.interface.print("* {s}{s}{s}\n", .{
+                format.YELLOW, obj.name, format.RESET
+            });
+        } else {
+            try writer.interface.print("{s}\n", .{obj.name});
+        }
+    }
 }
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {

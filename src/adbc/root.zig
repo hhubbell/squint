@@ -235,13 +235,24 @@ pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
 
 pub fn readCatalog(
     gpa: Allocator,
-    conn: *ConnectionIo
+    conn: *ConnectionIo,
+    depth: c_int,
+    filter: ConnectionCatalog.Filter
 ) ![]ConnectionCatalog.Catalog {
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
-    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn,
-        c.ADBC_OBJECT_DEPTH_ALL, null, null, null, null, null,
-        &stream, conn.errPtr()));
+    const f_cat: [*c]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_sch: [*c]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_tab: [*c]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+
+    defer {
+        if (f_cat) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_sch) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+    }
+
+    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
+        f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
     defer if (stream.release) |release| release(&stream);
 
     const getSchema = stream.get_schema orelse return error.AdbcLibError;

@@ -3,12 +3,14 @@ const c = @import("c");
 
 const root = @import("root.zig");
 
+const assert = std.debug.assert;
+
 const Allocator = std.mem.Allocator;
 const ConnectionIo = root.ConnectionIo;
 
 const Self = @This();
 
-const Filter = struct {
+pub const Filter = struct {
     catalog: ?[]const u8 = null,
     schema: ?[]const u8 = null,
     table: ?[]const u8 = null
@@ -49,8 +51,8 @@ pub const Column = struct {
 
 
 items: []Catalog,
-current_database: []const u8,
-current_schema: []const u8,
+current_database: i64,
+current_schema: i64,
 
 
 /// Initialize a ConnectionCatalog struct.
@@ -64,32 +66,82 @@ current_schema: []const u8,
 /// SQLite default. This may cause issues with other drivers and needs to be
 /// tested
 pub fn init(gpa: Allocator, conn: *ConnectionIo) !Self {
-    const db = try root.getOption(
-        gpa,
-        conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
-    ) orelse try gpa.dupe(u8, "main");
+    var self: Self = .{
+        .items = try root.readCatalog(gpa, conn,
+            c.ADBC_OBJECT_DEPTH_CATALOGS, .{}),
+        .current_database = -1,
+        .current_schema = -1
+    };
 
-    const sch = try root.getOption(
-        gpa,
-        conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
-    ) orelse try gpa.dupe(u8, "none");
+    try self.refresh(gpa, conn);
 
-    return .{
-        .items = try root.readCatalog(gpa, conn),
-        .current_database = db,
-        .current_schema = sch
-    };  
+    return self;  
 }
 
 /// Free the catalog slice and child schema/table slices
 pub fn deinit(self: Self, gpa: Allocator) void {
     for (self.items) |*i| i.deinit(gpa);
     gpa.free(self.items);
+}
 
-    gpa.free(self.current_database);
-    gpa.free(self.current_schema);
+/// Refresh the current connection cache
+pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    const cur_cat = try root.getOption(gpa, conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
+    ) orelse try gpa.dupe(u8, "main");
+    defer gpa.free(cur_cat);
+
+    self.current_database = indexInCatalog(Catalog,
+        .{ .name = cur_cat, .children = &.{} },
+        self.items);
+
+    // If we failed to set a database index for whatever reason, perhaps
+    // the connection does not specify it, return early and do not do any
+    // analysis of catalog schemas.
+    if (self.current_database < 0) {
+        return;
+    }
+
+    const cat_i: usize = @intCast(self.current_database);
+
+    const schms = try root.readCatalog(gpa, conn,
+        c.ADBC_OBJECT_DEPTH_DB_SCHEMAS,
+        .{ .catalog = cur_cat });
+    defer gpa.free(schms);
+    defer for (schms) |*obj| obj.deinit(gpa);
+
+    const cur_sch = try root.getOption(gpa, conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
+    ) orelse try gpa.dupe(u8, "none");
+    defer gpa.free(cur_sch);
+
+    // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
+    // ever get a many-catalog result, this will not behave as expected.
+    try insertSlice(Catalog, gpa, &self.items[cat_i], schms[0].children);
+
+    self.current_schema = indexInCatalog(Schema,
+        .{ .name = cur_sch, .children = &.{} },
+        self.items[cat_i].children);
+
+    // If we fail to set a schema index for whatever reason, return early
+    if (self.current_schema < 0) {
+        return;
+    }
+
+    const sch_i: usize = @intCast(self.current_schema);
+
+    const tabls = try root.readCatalog(gpa, conn,
+        c.ADBC_OBJECT_DEPTH_TABLES,
+        .{ .catalog = cur_cat, .schema = cur_sch });
+    defer gpa.free(tabls); 
+    defer for (tabls) |*obj| obj.deinit(gpa);
+
+    // FIXME: This is fine if `tbls` is always a slice of ONE catalog and
+    // ONE schema. If we ever get a many-catalog or many-schema result, this
+    // will not behave as expected.
+    try insertSlice(Schema, gpa,
+        &self.items[cat_i].children[sch_i],
+        tabls[0].children[0].children);
 }
 
 /// Return a slice of database catalogs
@@ -152,27 +204,23 @@ pub fn tables(
 /// Return a slice of database catalogs, based on the connection's
 /// current_catalog.
 pub fn currentConnCatalog(self: *Self) !Catalog {
-    for (self.items) |obj| {
-        if (std.mem.eql(u8, obj.name, self.current_database)) {
-            return obj;
-        }
+    if (self.current_database < 0) {
+        return error.InvalidConnectionOption;
     }
 
-    return error.InvalidConnectionOption;
+    return self.items[@intCast(self.current_database)];
 }
 
 /// Return a slice of database schemas, based on the connection's
 /// current_db_schema.
 pub fn currentConnSchema(self: *Self) !Schema {
-    const parent: Catalog = try self.currentConnCatalog();
-
-    for (parent.children) |obj| {
-        if (std.mem.eql(u8, obj.name, self.current_schema)) {
-            return obj;
-        }
+    if (self.current_schema < 0) {
+        return error.InvalidConnectionOption;
     }
 
-    return error.InvalidConnectionOption;
+    const parent: Catalog = try self.currentConnCatalog();
+
+    return parent.children[@intCast(self.current_schema)];
 }
 
 /// Return a slice of database tables, based on the connection's
@@ -233,4 +281,67 @@ pub fn readCatalogArrayList(
     }
 
     return try obj.toOwnedSlice(gpa);
+}
+
+// Checks if an item of a  catalog type exists in the connection catalog
+fn existsInCatalog(comptime T: type, needle: T, haystack: []T) bool {
+    return indexInCatalog(T, needle, haystack) >= 0;
+}
+
+fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
+    for (haystack, 0..) |hay, i| {
+        if (std.mem.eql(u8, needle.name, hay.name)) return @intCast(i);
+    }
+
+    return -1;
+}
+
+pub fn insertSlice(
+    comptime T: type,
+    gpa: Allocator,
+    obj: *T,
+    children: @FieldType(T, "children")
+) !void {
+    // Is this necessary if the function signature mandates children's type?
+    assert(@hasField(T, "children"));
+
+    // FIXME: Can we optimize this?
+
+    const ex_len: usize = obj.children.len;
+    const child_T: type = @typeInfo(@FieldType(T, "children")).pointer.child;
+
+    // First check the possible number of NEW children so we can realloc
+    // our children buffer
+    var counter: usize = 0;
+    for (children) |child| {
+        counter += @intFromBool(!existsInCatalog(
+            child_T,
+            child,
+            obj.children));
+    }
+
+    if (counter > 0) {
+        obj.children = try gpa.realloc(
+            obj.children,
+            obj.children.len + counter
+        );
+
+        const new_len: usize = obj.children.len;
+        for (ex_len..new_len) |i| {
+            obj.children[i] = std.mem.zeroInit(child_T, .{});
+        }
+    }
+
+    var open_block: usize = ex_len;
+    for (children) |child| {
+        const i: i64 = indexInCatalog(child_T, child, obj.children);
+
+        if (i < 0) {
+            obj.children[open_block] = child;
+            open_block += 1;
+        } else {
+            //gpa.free(obj.children[@intCast(i)]);
+            obj.children[@intCast(i)] = child;
+        }
+    }
 }
