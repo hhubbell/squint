@@ -43,6 +43,11 @@ const BufferIndexTuple = struct {
 
     pub fn initSlice(gpa: Allocator, buffers: usize, columns: usize) ![]Self {
         var tuples = try gpa.alloc(Self, buffers * columns);
+
+        if (buffers == 0) {
+            return tuples;
+        }
+
         const off: usize = @divFloor(tuples.len, buffers);
         
         for (0..buffers) |i| {
@@ -81,7 +86,10 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
     var grp: Io.Group = .init;
     defer grp.cancel(io);
 
-    const threads: usize = @min(buffer.filled, 16);
+    // If we got an empty result set, we need to ensure we have at
+    // least one thread
+    const res_set: usize = @max(buffer.filled, 1);
+    const threads: usize = @min(res_set, 16);
     const chunks: usize = try std.math.divCeil(usize, n_tasks, threads);
 
     for (0..threads) |i| {
