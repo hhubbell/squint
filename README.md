@@ -56,8 +56,8 @@ but not natively. It is unlikely that Windows will be supported natively.
 
 ## Usage
 
-```bash
-squint 0.0.0-dev.0
+```
+squint 0.0.0-dev.r4
 
 Usage: squint [DRIVER] [ARGS]
 
@@ -89,10 +89,8 @@ get there.
 
 - Set a consistent row limit for all drivers. Currently this behavior is
   driver-specific, based on how the driver batches row sets.
-- Consistent concurrency for processing batches. Currently, when processing
-  result sets, squint will create N concurrent processes based on the number
-  of batches. Ideally, we are more conservative with this.
 - Data type presentation. Not all data types are confirmed to be displaying
   correctly - e.g. `DATETIME`.
 - Truncate wide columns. Do something like `|Really long res...|` instead of
   printing the whole column. This should be configurable.
+- Nice-to-have dotcommands: .source, .catalog, and others
