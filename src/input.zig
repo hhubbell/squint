@@ -16,7 +16,10 @@ const Completions = c.linenoiseCompletions;
 pub const readline = c.linenoise;
 pub const addHistory = c.linenoiseHistoryAdd;
 pub const setCompletionCallback = c.linenoiseSetCompletionCallback;
+pub const setMultiLine = c.linenoiseSetMultiLine;
 
+// FIXME: Is this the right idiom?
+pub var active_query: InputQuery = undefined;
 pub var catalog: ?adbc.ConnectionCatalog = null;
 
 pub const DotCommandOptions = struct {
@@ -156,6 +159,88 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
 }
 
 
+const InputType = enum {
+    blank, canceled, continued, dot, execute, exit
+};
+
+pub fn inputType(query: [*c]u8) InputType {
+    // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
+    // then reset and continue. Otherwise exit the main loop.
+    if (query == null) {
+        if (std.c.errno(-1) == std.c.E.AGAIN) {
+            return .canceled;
+        } else {
+            return .exit;
+        }
+    }
+
+    const query_len = std.mem.len(query);
+
+    // If the user entered a blank string, give a new prompt
+    if (query_len == 0) {
+        return .blank;
+    }
+
+    // Dot commands are meta commands for interacting with the session.
+    if (query[0] == '.') {
+        return .dot;
+    }
+
+    // If the user entered a string that is not semicolon terminated,
+    // mark the input as continued
+    if (query[query_len - 1] != ';') {
+        return .continued;
+    }
+
+    return .execute;
+}
+
+
+pub const InputQuery = struct {
+    const Self = @This();
+    const buf_incr = 1;
+
+    parts: [][]const u8,
+    head: usize,
+
+    pub fn init(gpa: Allocator, size: usize) !Self {
+        const parts = try gpa.alloc([]const u8, size);
+
+        return .{
+            .parts = parts,
+            .head = 0
+        };
+    }
+
+    pub fn deinit(self: *Self, gpa: Allocator) void {
+        for (self.parts[0..self.head]) |p| gpa.free(p);
+        gpa.free(self.parts);
+    }
+
+    pub fn add(self: *Self, gpa: Allocator, val: []const u8) !void {
+        if (self.head >= self.parts.len) {
+            self.parts = try gpa.realloc(self.parts, self.parts.len + Self.buf_incr);
+        }
+
+        self.parts[self.head] = try gpa.dupe(u8, val);
+        self.head += 1;
+    }
+
+    pub fn clear(self: *Self, gpa: Allocator) void {
+        for (self.parts[0..self.head]) |p| gpa.free(p);
+        self.head = 0;
+        @memset(self.parts, "");
+    }
+
+    pub fn asStringZ(self: *Self, gpa: Allocator) ![:0]const u8 {
+        return try std.mem.joinZ(gpa, " ", self.parts[0..self.head]);
+    }
+
+    pub fn isEmpty(self: *Self) bool {
+        return self.head == 0;
+    }
+};
+
 const StatementType = enum {
     alter, create, delete, drop, insert, select, truncate, update, use
 };
@@ -242,7 +327,7 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
 
     const inpt_ctx: InputContext = splitInput(std.mem.span(buf));
 
-    if (inpt_ctx.kind == null) {
+    if (inpt_ctx.kind == null and active_query.isEmpty()) {
         const letter: ?u8 = inpt_ctx.firstLetter();
 
         // Enumerate dotcommands

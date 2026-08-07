@@ -159,48 +159,62 @@ pub fn main(init: std.process.Init) !void {
     };
     defer input.catalog.?.deinit(gpa);
 
+    input.setMultiLine(1);
     input.setCompletionCallback(input.completionCallback);
 
+    input.active_query = try .init(gpa, 2);
+    defer input.active_query.deinit(gpa);
+
+    var prompt: [*c]u8 = @constCast("> \x00");
+
     while (true) {
-        const query: [*c]u8 = input.readline("> ");
+        const query: [*c]u8 = input.readline(prompt);
         defer std.c.free(query);
 
-        // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
-        // then reset and continue. Otherwise exit the main loop.
-        if (query == null) {
-            if (std.c.errno(-1) == std.c.E.AGAIN) {
+        switch (input.inputType(query)) {
+            .blank,
+            .canceled => {
+                prompt = @constCast("> \x00");
                 continue;
-            } else {
-                break;
-            }
+            },
+            .continued => {
+                prompt = @constCast(". \x00");
+                try input.active_query.add(gpa, std.mem.span(query));
+                continue;
+            },
+            .dot => {
+                _ = input.addHistory(query);
+                input.dotCommand(std.mem.span(query), .{
+                    .msg = &msg,
+                    .conn = &conn,
+                    .gpa = gpa,
+                    .io = io
+                }) catch {
+                    try msg.printLastErr(&stderr.interface);
+                };
+
+                continue;
+            },
+            .execute => {
+                prompt = @constCast("> \x00");
+                try input.active_query.add(gpa, std.mem.span(query));
+            },
+            .exit => break
         }
 
-        // If the user entered a blank string, do not continue.
-        if (std.mem.len(query) == 0) {
-            continue;
-        }
+        const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
+        std.debug.print("{s}\n", .{qstr});
+        defer gpa.free(qstr);
 
-        _ = input.addHistory(query);
+        input.active_query.clear(gpa);
 
-        // Dot commands are meta commands for interacting with the session.
-        if (query[0] == '.') {
-            input.dotCommand(std.mem.span(query), .{
-                .msg = &msg,
-                .conn = &conn,
-                .gpa = gpa,
-                .io = io
-            }) catch {
-                try msg.printLastErr(&stderr.interface);
-            };
-
-            continue;
-        }
+        _ = input.addHistory(qstr);
 
         // Basic performance monitoring
         var perf: perfd.PerfData = .init(io);
 
         // FIXME: Move this lifecycle management to adbc module directly
-        var stmt: c.AdbcStatement = adbc.prepareStatement(&conn, query) catch {
+        var stmt: c.AdbcStatement = adbc.prepareStatement(&conn, qstr) catch {
             msg.addErr(conn.lastErrMsg());
             try msg.printLastErr(&stderr.interface);
             continue;
