@@ -1,14 +1,13 @@
 const std = @import("std");
 const c = @import("c");
 
+const err = @import("err.zig");
 const root = @import("root.zig");
 
 const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
 const ConnectionIo = root.ConnectionIo;
-
-const Self = @This();
 
 pub const Filter = struct {
     catalog: ?[]const u8 = null,
@@ -49,6 +48,15 @@ pub const Column = struct {
     name: []const u8
 };
 
+const RefreshHandler = *const fn (s: *Self, g: Allocator, c: *ConnectionIo) anyerror!void;
+const RefreshHandlerMap = std.StaticStringMap(RefreshHandler).initComptime(.{
+    //.{ "ADBC DuckDB Driver", &refreshHandlerInMemory },
+    //.{ "ADBC SQLite Driver", &refreshHandlerInMemory },
+    //"snowflake", refreshHandlerSnowflake
+});
+
+const Self = @This();
+
 
 items: []Catalog,
 current_database: i64,
@@ -67,8 +75,7 @@ current_schema: i64,
 /// tested
 pub fn init(gpa: Allocator, conn: *ConnectionIo) !Self {
     var self: Self = .{
-        .items = try root.readCatalog(gpa, conn,
-            c.ADBC_OBJECT_DEPTH_CATALOGS, .{}),
+        .items = undefined,
         .current_database = -1,
         .current_schema = -1
     };
@@ -84,64 +91,193 @@ pub fn deinit(self: Self, gpa: Allocator) void {
     gpa.free(self.items);
 }
 
-/// Refresh the current connection cache
-pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
-    const cur_cat = try root.getOption(gpa, conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
-    ) orelse try gpa.dupe(u8, "main");
-    defer gpa.free(cur_cat);
+pub fn read(
+    gpa: Allocator,
+    conn: *ConnectionIo,
+    depth: c_int,
+    filter: Filter
+) ![]Catalog {
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
-    self.current_database = indexInCatalog(Catalog,
-        .{ .name = cur_cat, .children = &.{} },
-        self.items);
+    const f_cat: [*c]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_sch: [*c]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_tab: [*c]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
 
-    // If we failed to set a database index for whatever reason, perhaps
-    // the connection does not specify it, return early and do not do any
-    // analysis of catalog schemas.
-    if (self.current_database < 0) {
-        return;
+    defer {
+        if (f_cat) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_sch) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
     }
 
+    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
+        f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
+    defer if (stream.release) |release| release(&stream);
+
+    const getSchema = stream.get_schema orelse return error.AdbcLibError;
+    const getNext = stream.get_next orelse return error.AdbcLibError;
+
+    var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
+
+    try err.checkArrowStream(getSchema(&stream, &schema));
+
+    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+
+    try err.checkArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
+
+    var obj: std.ArrayList(Catalog) = .empty;
+    defer obj.deinit(gpa);
+
+    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
+    while (getNext(&stream, &batch) == 0) {
+        if (batch.release == null) break;
+
+        try err.checkArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
+        const content = try readCatalogArrayList(
+            Catalog,
+            gpa, &view, 0, view.length);
+        defer gpa.free(content);
+
+        try obj.appendSlice(gpa, content);
+
+        //batch.release.?(&batch);
+    }
+ 
+    return obj.toOwnedSlice(gpa);
+}
+
+fn refreshCatalogList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    self.items = try read(gpa, conn,
+        c.ADBC_OBJECT_DEPTH_CATALOGS,
+        .{});
+}
+
+fn refreshCatalogIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    const opt = try root.getOption(gpa, conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
+    ) orelse return;
+    defer gpa.free(opt);
+
+    self.current_database = indexInCatalog(Catalog,
+        .{ .name = opt, .children = &.{} },
+        self.items);
+}
+
+fn refreshSchemaList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    const schms = try root.readCatalog(gpa, conn,
+    const objs = try read(gpa, conn,
         c.ADBC_OBJECT_DEPTH_DB_SCHEMAS,
-        .{ .catalog = cur_cat });
-    defer gpa.free(schms);
-    defer for (schms) |*obj| obj.deinit(gpa);
+        .{ .catalog = self.items[cat_i].name });
+    defer gpa.free(objs);
+    defer for (objs) |*obj| obj.deinit(gpa);
+
+    if (objs.len > 0) {
+        // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
+        // ever get a many-catalog result, this will not behave as expected.
+        try insertSlice(Catalog, gpa, &self.items[cat_i], objs[0].children);
+    }
+}
+
+fn refreshSchemaIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    if (self.current_database < 0) return;
+    const cat_i: usize = @intCast(self.current_database);
+
+    const opt = try root.getOption(gpa, conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
+    ) orelse return;
+    defer gpa.free(opt);
+
+    self.current_schema = indexInCatalog(Schema,
+        .{ .name = opt, .children = &.{} },
+        self.items[cat_i].children);
+}
+
+fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    if (self.current_database < 0) return;
+    if (self.current_schema < 0) return;
+
+    const cat_i: usize = @intCast(self.current_database);
+    const sch_i: usize = @intCast(self.current_schema);
+
+    const objs = try read(gpa, conn,
+        c.ADBC_OBJECT_DEPTH_TABLES,
+        .{ .catalog = self.items[cat_i].name,
+            .schema = self.items[cat_i].children[sch_i].name
+        });
+    defer gpa.free(objs);
+    defer for (objs) |*obj| obj.deinit(gpa);
+
+    if (
+        objs.len > 0
+        and objs[0].children.len > 0
+    ) {
+        try insertSlice(Schema, gpa,
+            &self.items[cat_i].children[sch_i],
+            objs[0].children[0].children);
+    }
+}
+
+/// Refresh the current connection cache
+pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    // TODO. Should I just memoize this rather than checking each time?
+    const driver = try root.getInfo(gpa, conn,
+        c.ADBC_INFO_DRIVER_NAME
+    ) orelse return error.AdbcDriverError;
+    defer gpa.free(driver);
+    std.debug.print("{s}\n", .{driver});
+
+    // Some drivers have slightly different behavior that needs to be taken
+    // into account when checking the current catalog/schema
+    const refresh_handler = refreshHandlerDefault; //RefreshHandlerMap.get(driver) orelse refreshHandlerDefault;
+
+    try refresh_handler(self, gpa, conn);
+}
+
+fn refreshHandlerDefault(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    try self.refreshCatalogList(gpa, conn);
+    try self.refreshCatalogIndex(gpa, conn);
+    try self.refreshSchemaList(gpa, conn);
+    try self.refreshSchemaIndex(gpa, conn);
+    try self.refreshTables(gpa, conn);
+}
+
+/// XXX
+///
+/// I thought this was necessary but it seems like it's not. Keeping for
+/// future review, but it is unlikely we need this special handler, and
+/// it has been removed from the custom handler map.
+fn refreshHandlerInMemory(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    // Refresh catalogs
+    try self.refreshCatalogList(gpa, conn);
+
+    const cur_cat = try root.getOption(gpa, conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
+    );
+    defer if (cur_cat) |o| gpa.free(o);
+
+    self.current_database = indexInCatalog(Catalog,
+        .{ .name = cur_cat orelse "main", .children = &.{} },
+        self.items);
+
+    // Refresh schemas
+    try self.refreshSchemaList(gpa, conn);
+
+    if (self.current_database < 0) return;
+    const cat_i: usize = @intCast(self.current_database);
 
     const cur_sch = try root.getOption(gpa, conn,
         c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
-    ) orelse try gpa.dupe(u8, "none");
-    defer gpa.free(cur_sch);
-
-    // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
-    // ever get a many-catalog result, this will not behave as expected.
-    try insertSlice(Catalog, gpa, &self.items[cat_i], schms[0].children);
+    );
+    defer if (cur_sch) |o| gpa.free(o);
 
     self.current_schema = indexInCatalog(Schema,
-        .{ .name = cur_sch, .children = &.{} },
+        .{ .name = cur_sch orelse "none", .children = &.{} },
         self.items[cat_i].children);
 
-    // If we fail to set a schema index for whatever reason, return early
-    if (self.current_schema < 0) {
-        return;
-    }
-
-    const sch_i: usize = @intCast(self.current_schema);
-
-    const tabls = try root.readCatalog(gpa, conn,
-        c.ADBC_OBJECT_DEPTH_TABLES,
-        .{ .catalog = cur_cat, .schema = cur_sch });
-    defer gpa.free(tabls); 
-    defer for (tabls) |*obj| obj.deinit(gpa);
-
-    // FIXME: This is fine if `tbls` is always a slice of ONE catalog and
-    // ONE schema. If we ever get a many-catalog or many-schema result, this
-    // will not behave as expected.
-    try insertSlice(Schema, gpa,
-        &self.items[cat_i].children[sch_i],
-        tabls[0].children[0].children);
+    // Refresh tables
+    try self.refreshTables(gpa, conn);
 }
 
 /// Return a slice of database catalogs

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("c");
 
 pub const err = @import("err.zig");
@@ -7,6 +8,7 @@ pub const meta = @import("meta.zig");
 pub const calcColumnMetadata = meta.calcColumnMetadata;
 pub const ColMetadata = meta.ColMetadata;
 
+pub const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
 pub const ArrowStreamBuffer = @import("StreamBuffer.zig");
 pub const ConnectionCatalog = @import("ConnectionCatalog.zig");
 
@@ -173,7 +175,72 @@ pub fn executeWithCancel(
 
 }
 
-pub fn getOption(gpa: Allocator, conn: *ConnectionIo, opt: []const u8) !?[]const u8 {
+pub fn getInfo(
+    gpa: Allocator,
+    conn: *ConnectionIo,
+    opt: u32
+) !?[]const u8 {
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+
+    const n_opt = 1;
+
+    try err.checkAdbc(c.AdbcConnectionGetInfo(&conn.conn,
+       &[_]u32{ opt },
+        n_opt,
+        &stream,
+        conn.errPtr()));
+    defer if (stream.release) |release| release(&stream);
+
+    var buf: NewArrowStreamBuffer = try .init(gpa, 1);
+    defer buf.deinit(gpa);
+
+    try readStreamNew(gpa, &stream, &buf);
+
+    // Currently we assume that getInfo only returns one value, and therefore
+    // one buffer. This is unlikely to be true long term, so to remind myself
+    // of this later we will panic if the call returned more data so we can
+    // write code to handle it.
+    if (builtin.mode == .debug) {
+        if (buf.filled > 1) {
+            @panic("getInfo call returned more buffers (>1) than expected");
+        }
+    }
+
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+    try err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buf.schema, &buf.err));
+    try err.checkArrowStream(c.ArrowArrayViewSetArray(
+        &view,
+        &buf.items[0],
+        &buf.err
+    ));
+
+    const info_val_c = view.children[1];
+
+    const type_id = c.ArrowArrayViewUnionTypeId(info_val_c, 0);
+    const offset = c.ArrowArrayViewUnionChildOffset(info_val_c, 0);
+    const child_i = c.ArrowArrayViewUnionChildIndex(info_val_c, 0);
+    const child = info_val_c.*.children[@intCast(child_i)];
+
+    switch (type_id) {
+        0 => {
+            const name_val = c.ArrowArrayViewGetStringUnsafe(child, offset);
+            const name_len: usize = @intCast(name_val.size_bytes);
+            if (name_len > 0) {
+                return try gpa.dupe(u8, name_val.data[0..name_len]);
+            }
+        },
+        // Not really, but I don't care right now.
+        else => unreachable
+    }
+
+    return null;
+}
+
+pub fn getOption(
+    gpa: Allocator,
+    conn: *ConnectionIo,
+    opt: []const u8
+) !?[]const u8 {
     var opt_len: usize = 0;
 
     err.checkAdbc(c.AdbcConnectionGetOption(&conn.conn,
@@ -184,7 +251,7 @@ pub fn getOption(gpa: Allocator, conn: *ConnectionIo, opt: []const u8) !?[]const
     )) catch return null;
 
     if (opt_len == 0) {
-        return error.UnhandledMissingCatalog;
+        return null;
     }
 
     var opt_buf: []u8 = try gpa.alloc(u8, opt_len);
@@ -228,62 +295,27 @@ pub fn readStream(
     }
 }
 
-/// Discover objects from a connection
-pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
-    return ConnectionCatalog.init(gpa, conn);
-}
-
-pub fn readCatalog(
+// Read an ArrowArrayStream into a storage buffer
+pub fn readStreamNew(
     gpa: Allocator,
-    conn: *ConnectionIo,
-    depth: c_int,
-    filter: ConnectionCatalog.Filter
-) ![]ConnectionCatalog.Catalog {
-    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-
-    const f_cat: [*c]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_sch: [*c]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_tab: [*c]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-
-    defer {
-        if (f_cat) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_sch) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-    }
-
-    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
-        f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
-    defer if (stream.release) |release| release(&stream);
-
+    stream: *c.ArrowArrayStream,
+    buffer: *NewArrowStreamBuffer
+) !void {
     const getSchema = stream.get_schema orelse return error.AdbcLibError;
     const getNext = stream.get_next orelse return error.AdbcLibError;
 
-    var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
-
-    try err.checkArrowStream(getSchema(&stream, &schema));
-
-    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-
-    try err.checkArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
-
-    var obj: std.ArrayList(ConnectionCatalog.Catalog) = .empty;
-    defer obj.deinit(gpa);
+    try err.checkArrowStream(getSchema(stream, &buffer.schema));
 
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(&stream, &batch) == 0) {
+    while (getNext(stream, &batch) == 0) {
         if (batch.release == null) break;
-
-        try err.checkArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
-        const content = try ConnectionCatalog.readCatalogArrayList(
-            ConnectionCatalog.Catalog,
-            gpa, &view, 0, view.length);
-        defer gpa.free(content);
-
-        try obj.appendSlice(gpa, content);
+        try buffer.add(gpa, batch);
     }
- 
-    return obj.toOwnedSlice(gpa);
+}
+
+/// Discover objects from a connection
+pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
+    return ConnectionCatalog.init(gpa, conn);
 }
 
 pub fn prepareStatement(
