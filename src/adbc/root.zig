@@ -185,7 +185,7 @@ pub fn getInfo(
     const n_opt = 1;
 
     try err.checkAdbc(c.AdbcConnectionGetInfo(&conn.conn,
-       &[_]u32{ opt },
+        &[_]u32{ opt },
         n_opt,
         &stream,
         conn.errPtr()));
@@ -334,7 +334,7 @@ pub fn prepareStatement(
 }
 
 /// Wrap AdbcStatementExecuteQuery in error handling
-fn executeStatement(
+pub fn executeStatement(
     conn: *ConnectionIo,
     stmt: *c.AdbcStatement,
     stream: *c.ArrowArrayStream

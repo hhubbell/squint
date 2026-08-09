@@ -152,11 +152,12 @@ pub fn main(init: std.process.Init) !void {
         return error.FatalStartupError;
     }
 
-    input.catalog = adbc.discoverObjects(gpa, &conn) catch {
-        msg.addFatalErr(conn.lastErrMsg());
-        try msg.printLastErr(&stderr.interface);
-        return;
-    };
+    input.catalog = try adbc.discoverObjects(gpa, &conn);
+    //catch {
+    //    msg.addFatalErr(conn.lastErrMsg());
+    //    try msg.printLastErr(&stderr.interface);
+    //    return;
+    //};
     defer input.catalog.?.deinit(gpa);
 
     input.setMultiLine(1);
@@ -175,6 +176,7 @@ pub fn main(init: std.process.Init) !void {
             .blank,
             .canceled => {
                 prompt = @constCast("> \x00");
+                input.active_query.clear(gpa);
                 continue;
             },
             .continued => {
@@ -203,7 +205,6 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
-        std.debug.print("{s}\n", .{qstr});
         defer gpa.free(qstr);
 
         input.active_query.clear(gpa);

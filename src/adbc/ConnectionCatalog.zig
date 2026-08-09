@@ -2,7 +2,10 @@ const std = @import("std");
 const c = @import("c");
 
 const err = @import("err.zig");
+const meta = @import("meta.zig");
 const root = @import("root.zig");
+
+const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
 
 const assert = std.debug.assert;
 
@@ -50,9 +53,8 @@ pub const Column = struct {
 
 const RefreshHandler = *const fn (s: *Self, g: Allocator, c: *ConnectionIo) anyerror!void;
 const RefreshHandlerMap = std.StaticStringMap(RefreshHandler).initComptime(.{
-    //.{ "ADBC DuckDB Driver", &refreshHandlerInMemory },
-    //.{ "ADBC SQLite Driver", &refreshHandlerInMemory },
-    //"snowflake", refreshHandlerSnowflake
+    .{ "ADBC SQLite Driver", &refreshHandlerSqlite },
+    .{ "ADBC Driver Foundry Driver for Snowflake", &refreshHandlerSnowflake }
 });
 
 const Self = @This();
@@ -226,11 +228,10 @@ pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
         c.ADBC_INFO_DRIVER_NAME
     ) orelse return error.AdbcDriverError;
     defer gpa.free(driver);
-    std.debug.print("{s}\n", .{driver});
 
     // Some drivers have slightly different behavior that needs to be taken
     // into account when checking the current catalog/schema
-    const refresh_handler = refreshHandlerDefault; //RefreshHandlerMap.get(driver) orelse refreshHandlerDefault;
+    const refresh_handler = RefreshHandlerMap.get(driver) orelse refreshHandlerDefault;
 
     try refresh_handler(self, gpa, conn);
 }
@@ -243,40 +244,116 @@ fn refreshHandlerDefault(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void
     try self.refreshTables(gpa, conn);
 }
 
-/// XXX
+/// Refresh handler for sqlite, which does not have schemas.
+fn refreshHandlerSqlite(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    self.items = try read(gpa, conn,
+        c.ADBC_OBJECT_DEPTH_ALL,
+        .{});
+
+    try self.refreshCatalogIndex(gpa, conn);
+
+    // Refresh the schema index using the "none" fallback value
+    if (self.current_database < 0) return;
+    const cat_i: usize = @intCast(self.current_database);
+
+    self.current_schema = indexInCatalog(Schema,
+        .{ .name = "none", .children = &.{} },
+        self.items[cat_i].children);
+}
+
+/// Refresh handler for snowflake, which may crash if CURRENT_SCHEMA() is not
+/// set. As a workaround, set the CURRENT_DATABASE()/CURRENT_SCHEMA() to a
+/// default value which exists in all client environments.
 ///
-/// I thought this was necessary but it seems like it's not. Keeping for
-/// future review, but it is unlikely we need this special handler, and
-/// it has been removed from the custom handler map.
-fn refreshHandlerInMemory(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
-    // Refresh catalogs
+/// XXX:
+/// AdbcConnectionGetOption is not behaving as expected for the snowflake
+/// driver. Instead, execute queries directly to get the desired connection
+/// parameters.
+fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
+    // Catalog
     try self.refreshCatalogList(gpa, conn);
 
-    const cur_cat = try root.getOption(gpa, conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
-    );
-    defer if (cur_cat) |o| gpa.free(o);
+    var buf: NewArrowStreamBuffer = try .init(gpa, 1);
+    defer buf.deinit(gpa);
 
-    self.current_database = indexInCatalog(Catalog,
-        .{ .name = cur_cat orelse "main", .children = &.{} },
-        self.items);
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+    var stmt: c.AdbcStatement = try root.prepareStatement(conn, "select current_database()");
 
-    // Refresh schemas
+    try root.executeStatement(conn, &stmt, &stream);
+    try root.readStreamNew(gpa, &stream, &buf);
+
+    var catalog = try meta.extractOneString(&buf);
+
+    // The connection profile did not specify a database, so we fallback to a
+    // known database that exists for all client systems.
+    if (catalog == null) {
+        try err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
+            c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG,
+            "SNOWFLAKE",
+            conn.errPtr()));
+
+        buf.clear();
+        try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+
+        stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+        stmt = try root.prepareStatement(conn, "select current_database()");
+
+        try root.executeStatement(conn, &stmt, &stream);
+        try root.readStreamNew(gpa, &stream, &buf);
+
+        catalog = try meta.extractOneString(&buf);
+    }
+
+    if (catalog) |cat| {
+        self.current_database = indexInCatalog(Catalog,
+            .{ .name = cat, .children = &.{} },
+            self.items);
+    }
+
+    // Reuse some stuff so clear it out to go again
+    buf.clear();
+    try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+
+    // Schema
     try self.refreshSchemaList(gpa, conn);
+
+    stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+    stmt = try root.prepareStatement(conn, "select current_schema()");
+
+    try root.executeStatement(conn, &stmt, &stream);
+    try root.readStreamNew(gpa, &stream, &buf);
+
+    var schema = try meta.extractOneString(&buf);
+
+    // The connection profile did not specify a schema, so we fallback to a
+    // known database that exists for all client systems.
+    if (schema == null) {
+        try err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
+            c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA,
+            "INFORMATION_SCHEMA",
+            conn.errPtr()));
+
+        buf.clear();
+        try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+
+        stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
+        stmt = try root.prepareStatement(conn, "select current_schema()");
+
+        try root.executeStatement(conn, &stmt, &stream);
+        try root.readStreamNew(gpa, &stream, &buf);
+
+        schema = try meta.extractOneString(&buf);
+    }
 
     if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    const cur_sch = try root.getOption(gpa, conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
-    );
-    defer if (cur_sch) |o| gpa.free(o);
+    if (schema) |sch| {
+        self.current_schema = indexInCatalog(Schema,
+            .{ .name = sch, .children = &.{} },
+            self.items[cat_i].children);
+    }
 
-    self.current_schema = indexInCatalog(Schema,
-        .{ .name = cur_sch orelse "none", .children = &.{} },
-        self.items[cat_i].children);
-
-    // Refresh tables
     try self.refreshTables(gpa, conn);
 }
 

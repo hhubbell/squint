@@ -5,6 +5,7 @@ const date = @import("date");
 const err = @import("err.zig");
 
 const ArrowStreamBuffer = @import("StreamBuffer.zig");
+const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -357,6 +358,42 @@ pub fn extractValue(
         },
         else => return "<unknown>"
     }
+}
+
+/// TODO: Can this be generalized?
+/// TODO: Is this the right part of this module to house this?
+///
+/// This API is very specific but there are a number of use-cases where we need
+/// to pull the value as a string from a single-item result set. This is a
+/// helper on top of all the boilerplate for doing that.
+pub fn extractOneString(buf: *NewArrowStreamBuffer) !?[]const u8 {
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+    try err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
+        &view,
+        &buf.schema,
+        &buf.err));
+    try err.checkArrowStream(c.ArrowArrayViewSetArray(
+        &view,
+        &buf.items[0],
+        &buf.err
+    ));
+
+    if (view.n_children < 1) {
+        return error.EmptySet;
+    }
+
+    const child: *c.ArrowArrayView = view.children[0];
+
+    if (c.ArrowArrayViewIsNull(child, 0) != 0) {
+        return null;
+    }
+
+    // Finally get the catalog name
+    const data_val = c.ArrowArrayViewGetStringUnsafe(child, 0);
+    const data_len: usize = @intCast(data_val.size_bytes);
+    const value: []const u8 = data_val.data[0..data_len];
+
+    return value;
 }
 
 /// Determine if an ArrowArray Slot is a null value

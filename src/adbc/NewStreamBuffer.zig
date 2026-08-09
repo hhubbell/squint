@@ -26,13 +26,7 @@ pub fn init(gpa: Allocator, capacity: u64) !Self {
 }
 
 pub fn deinit(self: *Self, gpa: Allocator) void {
-    if (self.schema.release) |release| release(&self.schema);
-
-    for (0..self.filled) |i| {
-        var batch = self.items[i];
-        if (batch.release) |release| release(&batch);
-    }
-
+    self.clear();    
     gpa.free(self.items);
 }
 
@@ -52,6 +46,17 @@ pub fn addFixed(self: *Self, batch: c.ArrowArray) !void {
 
     self.items[self.filled] = batch;
     self.filled += 1;
+}
+
+pub fn clear(self: *Self) void {
+    if (self.schema.release) |release| release(&self.schema);
+
+    for (0..self.filled) |i| {
+        var batch = self.items[i];
+        if (batch.release) |release| release(&batch);
+    }
+
+    self.filled = 0;
 }
 
 fn countBatchRows(self: *Self, i: usize) u64 {
