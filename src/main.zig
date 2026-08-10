@@ -190,7 +190,8 @@ pub fn main(init: std.process.Init) !void {
                     .msg = &msg,
                     .conn = &conn,
                     .gpa = gpa,
-                    .io = io
+                    .io = io,
+                    .pager = page_exec
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
@@ -220,7 +221,8 @@ pub fn main(init: std.process.Init) !void {
             try msg.printLastErr(&stderr.interface);
             continue;
         };
-        defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, &conn.err)) catch @panic("Failed to release statement.");
+        defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, conn.errPtr()))
+            catch @panic("Failed to release statement.");
 
         var strm: c.ArrowArrayStream = adbc.executeWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {

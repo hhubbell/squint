@@ -4,6 +4,7 @@ const c = @import("c");
 
 const format = @import("format.zig");
 const mesg = @import("message.zig");
+const pager = @import("pager.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -27,7 +28,8 @@ pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
     conn: *adbc.ConnectionIo,
     gpa: Allocator,
-    io: Io
+    io: Io,
+    pager: pager.PagerType
 };
 
 const DotCommand = struct {
@@ -164,17 +166,78 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     };
 
-    const file = try Dir.cwd().openFile(opts.io, fname, .{});
+    const file = Dir.cwd().openFile(opts.io, fname, .{}) catch {
+        // TODO you could avoid two allocations by providing an addFmtErr
+        // type method
+        const msg = try std.fmt.allocPrint(opts.gpa,
+            "Cannot access '{s}': No such file or directory",
+            .{ fname }
+        );
+        defer opts.gpa.free(msg);
+        opts.msg.addErr(msg);
+        return error.DotCommandError;
+    };
     defer file.close(opts.io);
 
     const fsize = try file.length(opts.io);
-    const buffer = try opts.gpa.alloc(u8, fsize);
+    const buffer: [:0]u8 = try opts.gpa.allocSentinel(u8, fsize, 0);
     defer opts.gpa.free(buffer);
 
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    std.debug.print("Would have executed\n\n{s}", .{buffer});
+    var stmt: c.AdbcStatement = adbc.prepareStatement(opts.conn, buffer) catch {
+        opts.msg.addErr(opts.conn.lastErrMsg());
+        return error.DotCommandError;
+    };
+    defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, opts.conn.errPtr()))
+        catch @panic("Failed to release statement.");
+
+    var strm: c.ArrowArrayStream = adbc.executeWithCancel(opts.io, opts.conn, &stmt) catch |err| {
+        switch (err) {
+            error.Canceled => opts.msg.addErr("Execution canceled."),
+            else => opts.msg.addErr(opts.conn.lastErrMsg())
+        }
+        return error.DotCommandError;
+    };
+
+    defer if (strm.release) |release| release(&strm);
+    
+    var res: adbc.ArrowStreamBuffer = undefined;
+    if (opts.conn.row_limit == null) {
+        res = try .initBuffers(opts.gpa, 64);
+    } else {
+        res = try .initRows(opts.gpa, opts.conn.row_limit.?);
+    }
+    defer res.deinit(opts.gpa);
+
+    adbc.readStream(opts.gpa, &strm, &res) catch |err| {
+        switch (err) {
+            error.ArrowStreamError => {
+                if (strm.get_last_error) |cb| {
+                    const err_msg: [*c]const u8 = cb(&strm);
+
+                    if (err_msg != null) {
+                        opts.msg.addErr(std.mem.span(err_msg));
+                    }
+                }
+            },
+            error.NanoArrowError => opts.msg.addErr(&res.err.message),
+            error.AdbcLibError => opts.msg.addErr("ADBC Library Error."),
+            else => opts.msg.addErr("Uncaught Error.")
+        }
+
+        return error.DotCommandError;
+    };
+
+    res.metadata = try adbc.calcColumnMetadata(opts.io, opts.gpa, &res);
+
+    const bufsz = format.calcResultBufSize(res.metadata.?, res.countRows());
+    var prntbuf = try opts.gpa.alloc(u8, bufsz);
+    defer opts.gpa.free(prntbuf);
+
+    try format.printStreamBuffer(&prntbuf, &res);
+    try pager.page(opts.io, opts.pager, prntbuf);
 }
 
 
