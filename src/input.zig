@@ -22,7 +22,7 @@ pub const setMultiLine = c.linenoiseSetMultiLine;
 
 // FIXME: Is this the right idiom?
 pub var active_query: InputQuery = undefined;
-pub var catalog: ?adbc.ConnectionCatalog = null;
+pub var catalog: adbc.ConnectionCatalog = .empty;
 
 pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
@@ -93,8 +93,8 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
     var writer = Io.File.stderr().writer(opts.io, &.{});
     
-    for (catalog.?.catalogs(), 0..) |obj, i| {
-        if (i == catalog.?.current_database) {
+    for (catalog.catalogs(), 0..) |obj, i| {
+        if (i == catalog.current_database) {
             try writer.interface.print("* {s}{s}{s}\n", .{
                 format.YELLOW, obj.name, format.RESET
             });
@@ -437,7 +437,7 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
 
     // TODO
     if (inpt_ctx.expectObjectNext()) {
-        const objects: []adbc.ConnectionCatalog.Table = catalog.?.currentConnTables() catch return;
+        const objects: []adbc.ConnectionCatalog.Table = catalog.currentConnTables() catch return;
 
         for (objects) |obj| {
             const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,

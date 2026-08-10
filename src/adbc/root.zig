@@ -313,11 +313,6 @@ pub fn readStreamNew(
     }
 }
 
-/// Discover objects from a connection
-pub fn discoverObjects(gpa: Allocator, conn: *ConnectionIo) !ConnectionCatalog {
-    return ConnectionCatalog.init(gpa, conn);
-}
-
 pub fn prepareStatement(
     conn: *ConnectionIo,
     c_query: [*c]const u8

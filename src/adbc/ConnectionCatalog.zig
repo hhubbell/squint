@@ -11,6 +11,7 @@ const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
 const ConnectionIo = root.ConnectionIo;
+const Io = std.Io;
 
 pub const Filter = struct {
     catalog: ?[]const u8 = null,
@@ -59,6 +60,12 @@ const RefreshHandlerMap = std.StaticStringMap(RefreshHandler).initComptime(.{
 
 const Self = @This();
 
+pub const empty: Self = .{
+    .items = &.{},
+    .current_database = -1,
+    .current_schema = -1
+};
+
 
 items: []Catalog,
 current_database: i64,
@@ -76,11 +83,7 @@ current_schema: i64,
 /// SQLite default. This may cause issues with other drivers and needs to be
 /// tested
 pub fn init(gpa: Allocator, conn: *ConnectionIo) !Self {
-    var self: Self = .{
-        .items = undefined,
-        .current_database = -1,
-        .current_schema = -1
-    };
+    var self: Self = .empty;
 
     try self.refresh(gpa, conn);
 

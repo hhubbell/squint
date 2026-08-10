@@ -113,18 +113,6 @@ pub fn main(init: std.process.Init) !void {
         argp.vargs.get("driver"),
         argp.vargs.get("uri"));
 
-    //var cfg: config.Config = undefined;
-    //if (argp.vargs.get("profile")) |profile| {
-    //    // Use arena allocator for profile config parsing
-    //    cfg = try config.readProfile(io,
-    //        init.arena.child_allocator,
-    //        init.environ_map,
-    //        arg_driver,
-    //        profile);
-    //} else {
-    //    cfg = try config.simpleConfig(arg_driver, arg_uri);
-    //}
-
     var stderr = Io.File.stderr().writer(io, &.{});
 
     // TODO:
@@ -152,13 +140,13 @@ pub fn main(init: std.process.Init) !void {
         return error.FatalStartupError;
     }
 
-    input.catalog = try adbc.discoverObjects(gpa, &conn);
-    //catch {
-    //    msg.addFatalErr(conn.lastErrMsg());
-    //    try msg.printLastErr(&stderr.interface);
-    //    return;
-    //};
-    defer input.catalog.?.deinit(gpa);
+    // Refresh the connection catalog asyncronously. This information is useful
+    // for completion, but it's ok if it's not ready by the time we get to the
+    // prompt. Spinning this off reduces the time to prompt, especially for
+    // connections with large catalogs, or which take a while to yield a result.
+    var catalog_fut = io.async(adbc.ConnectionCatalog.refresh, .{&input.catalog, gpa, &conn});
+    defer input.catalog.deinit(gpa);
+    defer catalog_fut.cancel(io) catch {};
 
     input.setMultiLine(1);
     input.setCompletionCallback(input.completionCallback);
