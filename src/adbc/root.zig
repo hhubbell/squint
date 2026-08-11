@@ -50,6 +50,7 @@ pub const ConnectionIo = struct {
     conn: c.AdbcConnection,
     err: c.AdbcError,
     rows_affected: i64 = 0,
+    last_result: ?*ArrowStreamBuffer = null, // FIXME: Clean this interface up
     row_limit: ?u64 = 10_240,
 
     pub fn init() Self {

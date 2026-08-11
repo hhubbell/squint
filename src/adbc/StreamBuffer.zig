@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("c");
 
+const errs = @import("err.zig");
 const ColMetadata = @import("meta.zig").ColMetadata;
 
 const Allocator = std.mem.Allocator;
@@ -62,16 +63,8 @@ pub fn initBuffers(alloc: Allocator, capacity: u64) !Self {
 }
 
 pub fn deinit(self: *Self, alloc: Allocator) void {
-    if (self.schema.release) |release| release(&self.schema);
-
-    for (0..self.filled) |i| {
-        var batch = self.items[i];
-        if (batch.release) |release| release(&batch);
-    }
-
+    self.clear(alloc);
     alloc.free(self.items);
-
-    if (self.metadata != null) alloc.free(self.metadata.?);
 }
 
 pub fn add(self: *Self, batch: c.ArrowArray) void {
@@ -82,6 +75,19 @@ pub fn add(self: *Self, batch: c.ArrowArray) void {
 
 pub fn canResize(self: *Self) bool {
     return !self.fixed;
+}
+
+pub fn clear(self: *Self, gpa: Allocator) void {
+    if (self.schema.release) |release| release(&self.schema);
+
+    for (0..self.filled) |i| {
+        var batch = self.items[i];
+        if (batch.release) |release| release(&batch);
+    }
+
+    if (self.metadata != null) gpa.free(self.metadata.?);
+
+    self.filled = 0;
 }
 
 pub fn countBatchRows(self: *Self, i: usize) u64 {
@@ -112,3 +118,22 @@ pub fn resize(self: *Self, alloc: Allocator) !void {
     self.items = try alloc.realloc(self.items, bufsize);
 }
 
+pub fn asArrayView(self: *Self, buffer_i: usize) !c.ArrowArrayView {
+    if (buffer_i >= self.filled) {
+        return error.IndexOutOfBounds;
+    }
+
+    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
+    // TODO: Should this be initialized and sent as a parameter to this
+    // function? Need to evaluate how expensive this Init call is.
+    try errs.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
+        &view,
+        &self.schema,
+        &self.err));
+    try errs.checkNanoArrow(c.ArrowArrayViewSetArray(
+        &view,
+        &self.items[buffer_i],
+        &self.err));
+
+    return view;
+}

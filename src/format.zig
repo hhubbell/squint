@@ -225,6 +225,7 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
 
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
     try adbc.err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
+    defer _ = c.ArrowArrayViewReset(&view);
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 

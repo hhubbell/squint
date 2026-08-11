@@ -5,6 +5,7 @@ const c = @import("c");
 const format = @import("format.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
+const CsvWriter = @import("render/CsvWriter.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -56,7 +57,9 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
     .{ ".nolimit", DotCommand {
         .help = "Return result sets unlimited",
         .call = dcNoLimit }},
-    //"save": .{ .call = dcSave },
+    .{ ".save", DotCommand {
+        .help = "Write the result set to file",
+        .call = dcSave }},
     .{ ".source", DotCommand {
         .help = "Read a file and execute its contents",
         .call = dcSource }}
@@ -158,6 +161,27 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
 fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
     opts.conn.row_limit = null;
+}
+
+fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
+    var file: Io.File = undefined; 
+    if (args.next()) |fname| {
+        file = Dir.cwd().createFile(opts.io, fname, .{}) catch {
+            //FIXME: add `e` when we support this in addErr
+            opts.msg.addErr("File IO error");  
+            return error.DotCommandError;
+        };
+    } else {
+        file = Io.File.stdout();
+    }
+    defer file.close(opts.io);
+
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.File.Writer = file.writer(opts.io, &buffer);
+
+    try CsvWriter.write(&writer.interface, opts.gpa, opts.conn.last_result.?); 
+
+    try writer.interface.flush();
 }
 
 fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {

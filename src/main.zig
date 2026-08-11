@@ -154,6 +154,21 @@ pub fn main(init: std.process.Init) !void {
     input.active_query = try .init(gpa, 2);
     defer input.active_query.deinit(gpa);
 
+    // FIXME: This is just a basic implementation to test that the behavior
+    // is roughly working. We should rename these initializers, and perhaps
+    // move the initializer to a vtable-ish think on another struct, i.e.
+    // the ConnManager.
+    // Due to the behavior of the ArrowArray stream, any limit the user has
+    // set is actually rounded up to multiple of 1024. Because the limit is
+    // applied on the client side and not server side, this really doesn't
+    // have a noticeable impact on performance. It's more so a quality of
+    // life behavior to avoid accidentally dumping millions of rows to the
+    // user's stdout.
+    // TODO: To support .save we are breaking row limits. This API needs
+    // some work anyway so it's fine.
+    var res: adbc.ArrowStreamBuffer = try .initRows(gpa, conn.row_limit.?);
+    defer res.deinit(gpa);
+
     var prompt: [*c]u8 = @constCast("> \x00");
 
     while (true) {
@@ -224,25 +239,9 @@ pub fn main(init: std.process.Init) !void {
 
         perf.exec = perf.lap(io);
 
-        // FIXME: This is just a basic implementation to test that the behavior
-        // is roughly working. We should rename these initializers, and perhaps
-        // move the initializer to a vtable-ish think on another struct, i.e.
-        // the ConnManager.
-        // Due to the behavior of the ArrowArray stream, any limit the user has
-        // set is actually rounded up to multiple of 1024. Because the limit is
-        // applied on the client side and not server side, this really doesn't
-        // have a noticeable impact on performance. It's more so a quality of
-        // life behavior to avoid accidentally dumping millions of rows to the
-        // user's stdout.
-        var res: adbc.ArrowStreamBuffer = undefined;
-        if (conn.row_limit == null) {
-            // Unlimited with 64 initial buffers (65,536 row initial cap)
-            res = try .initBuffers(gpa, 64);
-        } else {
-            // Fixed limit bufers based on user-defined input
-            res = try .initRows(gpa, conn.row_limit.?);
-        }
-        defer res.deinit(gpa);
+        // Clear the prior result set, which was retained for .save and maybe
+        // other dotcommands
+        res.clear(gpa);
 
         adbc.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
@@ -264,6 +263,8 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
 
+        conn.last_result = &res;
+
         perf.load = perf.lap(io);
 
         res.metadata = try adbc.calcColumnMetadata(io, gpa, &res);
@@ -283,6 +284,15 @@ pub fn main(init: std.process.Init) !void {
         try format.printStreamBuffer(&prntbuf, &res);
 
         perf.rend = perf.lap(io);
+
+        // FIXME: We should do this selectively. E.g. only update the catalog
+        // cache IF the statement type was something that would have changed
+        // the catalog, such as changing the current database or schema, or
+        // creating an object.
+        // Also how to make sure this gets cleaned up without slowing down the
+        // next prompt?
+        //_ = io.async(adbc.ConnectionCatalog.refresh, .{&input.catalog, gpa, &conn});
+        //defer ref_fut.cancel(io) catch {};
 
         try pager.page(io, page_exec, prntbuf);
 
