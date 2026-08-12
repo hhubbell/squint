@@ -1,16 +1,12 @@
 const std = @import("std");
+const adbc = @import("adbc");
 const c = @import("c");
 
-const err = @import("err.zig");
-const meta = @import("meta.zig");
-const root = @import("root.zig");
-
-const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
+const ConnectionIo = @import("ConnectionIo.zig");
 
 const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
-const ConnectionIo = root.ConnectionIo;
 const Io = std.Io;
 
 pub const Filter = struct {
@@ -114,7 +110,7 @@ pub fn read(
         if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
     }
 
-    try err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
+    try adbc.err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
         f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
     defer if (stream.release) |release| release(&stream);
 
@@ -123,12 +119,12 @@ pub fn read(
 
     var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
 
-    try err.checkNanoArrowStream(getSchema(&stream, &schema));
+    try adbc.err.checkNanoArrowStream(getSchema(&stream, &schema));
 
     var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
 
-    try err.checkNanoArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
+    try adbc.err.checkNanoArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
 
     var obj: std.ArrayList(Catalog) = .empty;
     defer obj.deinit(gpa);
@@ -137,7 +133,7 @@ pub fn read(
     while (getNext(&stream, &batch) == 0) {
         if (batch.release == null) break;
 
-        try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
+        try adbc.err.checkNanoArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
         const content = try readCatalogArrayList(
             Catalog,
             gpa, &view, 0, view.length);
@@ -158,8 +154,9 @@ fn refreshCatalogList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
 }
 
 fn refreshCatalogIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
-    const opt = try root.getOption(gpa, conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG
+    const opt = try adbc.getOption(gpa, &conn.conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG,
+        conn.errPtr()
     ) orelse return;
     defer gpa.free(opt);
 
@@ -189,8 +186,9 @@ fn refreshSchemaIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    const opt = try root.getOption(gpa, conn,
-        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA
+    const opt = try adbc.getOption(gpa, &conn.conn,
+        c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA,
+        conn.errPtr()
     ) orelse return;
     defer gpa.free(opt);
 
@@ -227,8 +225,9 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
 /// Refresh the current connection cache
 pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     // TODO. Should I just memoize this rather than checking each time?
-    const driver = try root.getInfo(gpa, conn,
-        c.ADBC_INFO_DRIVER_NAME
+    const driver = try adbc.getInfo(gpa, &conn.conn,
+        c.ADBC_INFO_DRIVER_NAME,
+        conn.errPtr()
     ) orelse return error.AdbcDriverError;
     defer gpa.free(driver);
 
@@ -276,35 +275,41 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     // Catalog
     try self.refreshCatalogList(gpa, conn);
 
-    var buf: NewArrowStreamBuffer = try .init(gpa, 1);
+    var buf: adbc.NewArrowStreamBuffer = try .init(gpa, 1);
     defer buf.deinit(gpa);
 
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-    var stmt: c.AdbcStatement = try root.prepareStatement(conn, "select current_database()");
+    var stmt: c.AdbcStatement = try adbc.prepareStatement(
+        "select current_database()",
+        &conn.conn,
+        conn.errPtr());
 
-    try root.executeStatement(conn, &stmt, &stream);
-    try root.readStreamNew(gpa, &stream, &buf);
+    try adbc.executeStatement(&stmt, &stream, conn.errPtr());
+    try adbc.readStreamNew(gpa, &stream, &buf);
 
-    var catalog = try meta.extractOneString(&buf);
+    var catalog = try adbc.meta.extractOneString(&buf);
 
     // The connection profile did not specify a database, so we fallback to a
     // known database that exists for all client systems.
     if (catalog == null) {
-        try err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
+        try adbc.err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
             c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG,
             "SNOWFLAKE",
             conn.errPtr()));
 
         buf.clear();
-        try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+        try adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
 
         stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-        stmt = try root.prepareStatement(conn, "select current_database()");
+        stmt = try adbc.prepareStatement(
+            "select current_database()",
+            &conn.conn,
+            conn.errPtr());
 
-        try root.executeStatement(conn, &stmt, &stream);
-        try root.readStreamNew(gpa, &stream, &buf);
+        try adbc.executeStatement(&stmt, &stream, conn.errPtr());
+        try adbc.readStreamNew(gpa, &stream, &buf);
 
-        catalog = try meta.extractOneString(&buf);
+        catalog = try adbc.meta.extractOneString(&buf);
     }
 
     if (catalog) |cat| {
@@ -315,37 +320,43 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
 
     // Reuse some stuff so clear it out to go again
     buf.clear();
-    try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+    try adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
 
     // Schema
     try self.refreshSchemaList(gpa, conn);
 
     stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-    stmt = try root.prepareStatement(conn, "select current_schema()");
+    stmt = try adbc.prepareStatement(
+        "select current_schema()",
+        &conn.conn,
+        conn.errPtr());
 
-    try root.executeStatement(conn, &stmt, &stream);
-    try root.readStreamNew(gpa, &stream, &buf);
+    try adbc.executeStatement(&stmt, &stream, conn.errPtr());
+    try adbc.readStreamNew(gpa, &stream, &buf);
 
-    var schema = try meta.extractOneString(&buf);
+    var schema = try adbc.meta.extractOneString(&buf);
 
     // The connection profile did not specify a schema, so we fallback to a
     // known database that exists for all client systems.
     if (schema == null) {
-        try err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
+        try adbc.err.checkAdbc(c.AdbcConnectionSetOption(&conn.conn,
             c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA,
             "INFORMATION_SCHEMA",
             conn.errPtr()));
 
         buf.clear();
-        try err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
+        try adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, null));
 
         stream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-        stmt = try root.prepareStatement(conn, "select current_schema()");
+        stmt = try adbc.prepareStatement(
+            "select current_schema()",
+            &conn.conn,
+            conn.errPtr());
 
-        try root.executeStatement(conn, &stmt, &stream);
-        try root.readStreamNew(gpa, &stream, &buf);
+        try adbc.executeStatement(&stmt, &stream, conn.errPtr());
+        try adbc.readStreamNew(gpa, &stream, &buf);
 
-        schema = try meta.extractOneString(&buf);
+        schema = try adbc.meta.extractOneString(&buf);
     }
 
     if (self.current_database < 0) return;

@@ -5,6 +5,9 @@ const c = @import("c");
 const format = @import("format.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
+
+const ConnectionCatalog = @import("ConnectionCatalog.zig");
+const ConnectionIo = @import("ConnectionIo.zig");
 const CsvWriter = @import("render/CsvWriter.zig");
 
 const Allocator = std.mem.Allocator;
@@ -23,11 +26,11 @@ pub const setMultiLine = c.linenoiseSetMultiLine;
 
 // FIXME: Is this the right idiom?
 pub var active_query: InputQuery = undefined;
-pub var catalog: adbc.ConnectionCatalog = .empty;
+pub var catalog: ConnectionCatalog = .empty;
 
 pub const DotCommandOptions = struct {
     msg: *mesg.MessageBuffer,
-    conn: *adbc.ConnectionIo,
+    conn: *ConnectionIo,
     gpa: Allocator,
     io: Io,
     pager: pager.PagerType
@@ -181,12 +184,17 @@ fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     } else {
         file = Io.File.stdout();
     }
-    defer file.close(opts.io);
+    defer {
+        if (file.handle != Io.File.stdout().handle) file.close(opts.io);
+    }
 
     var buffer: [4096]u8 = undefined;
     var writer: Io.File.Writer = file.writer(opts.io, &buffer);
 
-    try CsvWriter.write(&writer.interface, opts.gpa, opts.conn.last_result.?); 
+    CsvWriter.write(&writer.interface, opts.gpa, &opts.conn.last_result) catch |e| {
+        opts.msg.addErr(".save failed: {s}", .{@errorName(e)});
+        return error.DotCommandError;
+    };
 
     try writer.interface.flush();
 }
@@ -213,14 +221,21 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    var stmt: c.AdbcStatement = adbc.prepareStatement(opts.conn, buffer) catch {
+    var stmt: c.AdbcStatement = adbc.prepareStatement(
+        buffer,
+        &opts.conn.conn,
+        opts.conn.errPtr()
+    ) catch {
         opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()});
         return error.DotCommandError;
     };
     defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, opts.conn.errPtr()))
         catch @panic("Failed to release statement.");
 
-    var strm: c.ArrowArrayStream = adbc.executeWithCancel(opts.io, opts.conn, &stmt) catch |err| {
+    var strm: c.ArrowArrayStream = adbc.executeWithCancel(opts.io,
+        &stmt,
+        opts.conn.errPtr()
+    ) catch |err| {
         switch (err) {
             error.Canceled => opts.msg.addErr("Execution canceled.", .{}),
             else => opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()})
@@ -460,7 +475,7 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
 
     // TODO
     if (inpt_ctx.expectObjectNext()) {
-        const objects: []adbc.ConnectionCatalog.Table = catalog.currentConnTables() catch return;
+        const objects: []ConnectionCatalog.Table = catalog.currentConnTables() catch return;
 
         for (objects) |obj| {
             const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,

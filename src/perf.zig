@@ -31,6 +31,16 @@ pub const PerfData = struct {
         return @intCast(delta);
     }
 
+    pub fn reset(self: *Self, io: Io) void {
+        self.rows = 0;
+        self.exec = 0;
+        self.load = 0;
+        self.proc = 0;
+        self.rend = 0;
+
+        self.last_lap = .now(io, .real);
+    }
+
     /// Print performance data
     pub fn format(self: Self, writer: *Io.Writer) !void {
         var exec: [5]u8 = undefined;
