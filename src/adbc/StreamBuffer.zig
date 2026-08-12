@@ -88,6 +88,7 @@ pub fn clear(self: *Self, gpa: Allocator) void {
     if (self.metadata != null) gpa.free(self.metadata.?);
 
     self.filled = 0;
+    self.metadata = null;
 }
 
 pub fn countBatchRows(self: *Self, i: usize) u64 {

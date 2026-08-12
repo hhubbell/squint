@@ -198,7 +198,6 @@ pub fn main(init: std.process.Init) !void {
                 // Clear the prior result set, which was retained for .save and
                 // maybe other dotcommands
                 conn.last_result.clear(gpa);
-
             },
             .exit => break
         }
