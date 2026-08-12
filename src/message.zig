@@ -144,6 +144,7 @@ pub const MessageBuffer = struct {
         }
 
         try writer.print("{s}\n", .{ last_err.?.msg.? });
+        try writer.flush();
     }
 
     pub fn printAllErrs(self: *Self, writer: *std.Io.Writer) !void {
@@ -177,5 +178,7 @@ pub const MessageBuffer = struct {
 
             i += 1;
         }
+
+        try writer.flush();
     }
 };

@@ -94,7 +94,8 @@ fn iterDotCommands() [DotCommandMap.keys().len][]const u8 {
 
 fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    var writer = Io.File.stderr().writer(opts.io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer = Io.File.stderr().writer(opts.io, &buffer);
     
     for (catalog.catalogs(), 0..) |obj, i| {
         if (i == catalog.current_database) {
@@ -104,12 +105,14 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
         } else {
             try writer.interface.print("{s}\n", .{obj.name});
         }
+        try writer.interface.flush();
     }
 }
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    var writer = Io.File.stderr().writer(opts.io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer = Io.File.stderr().writer(opts.io, &buffer);
     try opts.msg.printAllErrs(&writer.interface);
 }
 
@@ -122,7 +125,8 @@ fn dcExit(args: *TokenIter, opts: DotCommandOptions) !void {
 
 fn dcHelp(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    var writer = Io.File.stderr().writer(opts.io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer = Io.File.stderr().writer(opts.io, &buffer);
 
     for (iterDotCommands()) |k| {
         const v = DotCommandMap.get(k) orelse unreachable;
@@ -135,12 +139,14 @@ fn dcHelp(args: *TokenIter, opts: DotCommandOptions) !void {
     }
 
     try writer.interface.print("\n", .{});
+    try writer.interface.flush();
 }
 
 fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     const cur: ?u64 = opts.conn.row_limit;
     const new: ?[]const u8 = args.next();
-    var writer = Io.File.stderr().writer(opts.io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer = Io.File.stderr().writer(opts.io, &buffer);
 
     if (new == null) {
         if (cur == null) {
@@ -148,6 +154,7 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
         } else {
             try writer.interface.print("{d}\n", .{cur.?});
         }
+        try writer.interface.flush();
 
         return;
     }

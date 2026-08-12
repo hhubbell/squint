@@ -66,6 +66,7 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
         }
     }
 
+    try writer.flush();
 }
 
 /// Get the output handle window size
@@ -113,7 +114,8 @@ pub fn main(init: std.process.Init) !void {
         argp.vargs.get("driver"),
         argp.vargs.get("uri"));
 
-    var stderr = Io.File.stderr().writer(io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var stderr: Io.File.Writer = Io.File.stderr().writer(io, &buffer);
 
     // TODO:
     //  We can use window size information to apply some formatting rules to
@@ -294,6 +296,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Diagnostics
         try stderr.interface.print("{f}\n", .{ perf });
+        try stderr.interface.flush();
     }
 }
 

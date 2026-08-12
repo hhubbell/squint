@@ -89,7 +89,8 @@ fn morePipe(io: Io, data: []const u8) !void {
 /// Wite output unbuffered to a child process pipe. In the event the pipe
 /// closes, clean up and return, making the WriteFailed error
 fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
-    var writer = child.stdin.?.writer(io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer = child.stdin.?.writer(io, &buffer);
 
     // WARNING: 
     //  When we close our pager without reading the full result set, less
@@ -98,6 +99,17 @@ fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
     //  inputs results in a WriteFailed error due to a broken pipe. In this
     //  case, we are just ignoring the error and returning.
     writer.interface.writeAll(data) catch |err| {
+        if (err == error.WriteFailed) {
+            child.stdin.?.close(io);
+            child.stdin = null;
+            _ = try child.wait(io);
+
+            return;
+        }
+
+        return err;
+    };
+    writer.interface.flush() catch |err| {
         if (err == error.WriteFailed) {
             child.stdin.?.close(io);
             child.stdin = null;
@@ -124,9 +136,11 @@ fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
 /// In the event that no pager was available, write the output unbuffered
 /// to stdout.
 fn writeStdout(io: Io, data: []const u8) !void {
-    var writer = Io.File.stdout().writer(io, &.{});
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.File.Writer = Io.File.stdout().writer(io, &buffer);
 
     try writer.interface.writeAll(data);
+    try writer.interface.flush();
 }
 
 
