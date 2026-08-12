@@ -123,12 +123,12 @@ pub fn read(
 
     var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
 
-    try err.checkArrowStream(getSchema(&stream, &schema));
+    try err.checkNanoArrowStream(getSchema(&stream, &schema));
 
     var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
 
-    try err.checkArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
+    try err.checkNanoArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
 
     var obj: std.ArrayList(Catalog) = .empty;
     defer obj.deinit(gpa);
@@ -137,7 +137,7 @@ pub fn read(
     while (getNext(&stream, &batch) == 0) {
         if (batch.release == null) break;
 
-        try err.checkArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
+        try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
         const content = try readCatalogArrayList(
             Catalog,
             gpa, &view, 0, view.length);

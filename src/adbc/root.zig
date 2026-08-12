@@ -209,7 +209,7 @@ pub fn getInfo(
 
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
     try err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buf.schema, &buf.err));
-    try err.checkArrowStream(c.ArrowArrayViewSetArray(
+    try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(
         &view,
         &buf.items[0],
         &buf.err
@@ -279,7 +279,7 @@ pub fn readStream(
     const getSchema = stream.get_schema orelse return error.AdbcLibError;
     const getNext = stream.get_next orelse return error.AdbcLibError;
 
-    try err.checkArrowStream(getSchema(stream, &buffer.schema));
+    try err.checkNanoArrowStream(getSchema(stream, &buffer.schema));
 
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
     while (getNext(stream, &batch) == 0) {
@@ -305,7 +305,7 @@ pub fn readStreamNew(
     const getSchema = stream.get_schema orelse return error.AdbcLibError;
     const getNext = stream.get_next orelse return error.AdbcLibError;
 
-    try err.checkArrowStream(getSchema(stream, &buffer.schema));
+    try err.checkNanoArrowStream(getSchema(stream, &buffer.schema));
 
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
     while (getNext(stream, &batch) == 0) {

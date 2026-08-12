@@ -83,7 +83,7 @@ fn windowSize(handle: Io.File.Handle, msg: *mesg.MessageBuffer) posix.winsize {
         @intFromPtr(&winsize));
 
     if (posix.errno(err) != .SUCCESS) {
-        msg.addErr("Ioctl winsize unknown.");
+        msg.addErr("Ioctl winsize unknown.", .{});
     }
 
     return winsize;
@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
     defer argp.vargs.deinit(gpa);
 
     argp.parse(gpa, init.minimal.args) catch {
-        msg.addErr("Unexpected argument parsing error.");
+        msg.addErr("Unexpected argument parsing error.", .{});
     };
 
     const cfg: adbc.AdbcConfig = .init(
@@ -124,7 +124,7 @@ pub fn main(init: std.process.Init) !void {
 
     var conn: adbc.ConnectionIo = .init();
     adbc.connect(gpa, &conn, cfg) catch {
-        msg.addFatalErr(conn.lastErrMsg());
+        msg.addFatalErr("{s}", .{conn.lastErrMsg()});
     };
     defer _ = conn.deinit() catch {};
 
@@ -220,7 +220,7 @@ pub fn main(init: std.process.Init) !void {
 
         // FIXME: Move this lifecycle management to adbc module directly
         var stmt: c.AdbcStatement = adbc.prepareStatement(&conn, qstr) catch {
-            msg.addErr(conn.lastErrMsg());
+            msg.addErr("{s}", .{conn.lastErrMsg()});
             try msg.printLastErr(&stderr.interface);
             continue;
         };
@@ -229,8 +229,8 @@ pub fn main(init: std.process.Init) !void {
 
         var strm: c.ArrowArrayStream = adbc.executeWithCancel(io, &conn, &stmt) catch |err| {
             switch (err) {
-                error.Canceled => msg.addErr("Execution canceled."),
-                else => msg.addErr(conn.lastErrMsg())
+                error.Canceled => msg.addErr("Execution canceled.", .{}),
+                else => msg.addErr("{s}", .{conn.lastErrMsg()})
             }
             try msg.printLastErr(&stderr.interface);
             continue;
@@ -245,18 +245,14 @@ pub fn main(init: std.process.Init) !void {
 
         adbc.readStream(gpa, &strm, &res) catch |err| {
             switch (err) {
-                error.ArrowStreamError => {
-                    if (strm.get_last_error) |cb| {
-                        const err_msg: [*c]const u8 = cb(&strm);
-
-                        if (err_msg != null) {
-                            msg.addErr(std.mem.span(err_msg));
-                        }
-                    }
-                },
-                error.NanoArrowError => msg.addErr(&res.err.message),
-                error.AdbcLibError => msg.addErr("ADBC Library Error."),
-                else => msg.addErr("Uncaught Error.")
+                error.NanoArrowStreamError =>
+                    adbc.err.onNanoArrowStreamErrMsg(&strm,
+                        @TypeOf(msg),
+                        &msg,
+                        mesg.MessageBuffer.addErr),
+                error.NanoArrowError => msg.addErr("{s}", .{res.err.message}),
+                error.AdbcLibError => msg.addErr("ADBC Library Error.", .{}),
+                else => msg.addErr("Uncaught Error.", .{})
             }
 
             try msg.printLastErr(&stderr.interface);

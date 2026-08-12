@@ -75,19 +75,19 @@ pub const MessageBuffer = struct {
         }
     }
 
-    pub fn addErr(self: *Self, msg: []const u8) void {
+    pub fn addErr(self: *Self, comptime msg: []const u8, args: anytype) void {
         const box: Message = .{
             .kind = .err,
-            .msg = self.alloc.dupe(u8, msg) catch null
+            .msg = std.fmt.allocPrint(self.alloc, msg, args) catch null
         };
 
         self.addBoxedMsg(box);
     }
 
-    pub fn addFatalErr(self: *Self, msg: []const u8) void {
+    pub fn addFatalErr(self: *Self, comptime msg: []const u8, args: anytype) void {
         const box: Message = .{
             .kind = .fatal,
-            .msg = self.alloc.dupe(u8, msg) catch null
+            .msg = std.fmt.allocPrint(self.alloc, msg, args) catch null
         };
 
         self.addBoxedMsg(box);

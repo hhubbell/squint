@@ -70,7 +70,7 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
 pub fn dotCommand(cmd: []const u8, opts: DotCommandOptions) !void {
     var iter = std.mem.splitScalar(u8, cmd, ' ');
     const dotc = DotCommandMap.get(iter.first()) orelse {
-        opts.msg.addErr("Invalid dot command.");
+        opts.msg.addErr("Invalid dot command.", .{});
         return error.DotCommandError;
     };
 
@@ -153,7 +153,7 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     }
 
     opts.conn.row_limit = std.fmt.parseInt(u64, new.?, 10) catch {
-        opts.msg.addErr("Invalid limit.");
+        opts.msg.addErr("Invalid limit.", .{});
         return error.DotCommandError;
     };
 }
@@ -166,9 +166,9 @@ fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
 fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     var file: Io.File = undefined; 
     if (args.next()) |fname| {
-        file = Dir.cwd().createFile(opts.io, fname, .{}) catch {
+        file = Dir.cwd().createFile(opts.io, fname, .{}) catch |e| {
             //FIXME: add `e` when we support this in addErr
-            opts.msg.addErr("File IO error");  
+            opts.msg.addErr("File IO error: {s}", .{@errorName(e)});  
             return error.DotCommandError;
         };
     } else {
@@ -186,19 +186,15 @@ fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
 
 fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     const fname: []const u8 = args.next() orelse {
-        opts.msg.addErr("Invalid command invocation.");
+        opts.msg.addErr("Invalid command invocation.", .{});
         return error.DotCommandError;
     };
 
     const file = Dir.cwd().openFile(opts.io, fname, .{}) catch {
-        // TODO you could avoid two allocations by providing an addFmtErr
-        // type method
-        const msg = try std.fmt.allocPrint(opts.gpa,
+        opts.msg.addErr(
             "Cannot access '{s}': No such file or directory",
             .{ fname }
         );
-        defer opts.gpa.free(msg);
-        opts.msg.addErr(msg);
         return error.DotCommandError;
     };
     defer file.close(opts.io);
@@ -211,7 +207,7 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     try reader.interface.readSliceAll(buffer);
 
     var stmt: c.AdbcStatement = adbc.prepareStatement(opts.conn, buffer) catch {
-        opts.msg.addErr(opts.conn.lastErrMsg());
+        opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()});
         return error.DotCommandError;
     };
     defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, opts.conn.errPtr()))
@@ -219,8 +215,8 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
 
     var strm: c.ArrowArrayStream = adbc.executeWithCancel(opts.io, opts.conn, &stmt) catch |err| {
         switch (err) {
-            error.Canceled => opts.msg.addErr("Execution canceled."),
-            else => opts.msg.addErr(opts.conn.lastErrMsg())
+            error.Canceled => opts.msg.addErr("Execution canceled.", .{}),
+            else => opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()})
         }
         return error.DotCommandError;
     };
@@ -237,18 +233,14 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
 
     adbc.readStream(opts.gpa, &strm, &res) catch |err| {
         switch (err) {
-            error.ArrowStreamError => {
-                if (strm.get_last_error) |cb| {
-                    const err_msg: [*c]const u8 = cb(&strm);
-
-                    if (err_msg != null) {
-                        opts.msg.addErr(std.mem.span(err_msg));
-                    }
-                }
-            },
-            error.NanoArrowError => opts.msg.addErr(&res.err.message),
-            error.AdbcLibError => opts.msg.addErr("ADBC Library Error."),
-            else => opts.msg.addErr("Uncaught Error.")
+            error.NanoArrowStreamError =>
+                adbc.err.onNanoArrowStreamErrMsg(&strm,
+                    @typeInfo(@TypeOf(opts.msg)).pointer.child,
+                    opts.msg,
+                    mesg.MessageBuffer.addErr),
+            error.NanoArrowError => opts.msg.addErr("{s}", .{res.err.message}),
+            error.AdbcLibError => opts.msg.addErr("ADBC Library Error.", .{}),
+            else => opts.msg.addErr("Uncaught Error.", .{})
         }
 
         return error.DotCommandError;

@@ -372,7 +372,7 @@ pub fn extractOneString(buf: *NewArrowStreamBuffer) !?[]const u8 {
         &view,
         &buf.schema,
         &buf.err));
-    try err.checkArrowStream(c.ArrowArrayViewSetArray(
+    try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(
         &view,
         &buf.items[0],
         &buf.err
