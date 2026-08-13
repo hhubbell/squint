@@ -245,6 +245,9 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
+    // Clear the prior result set
+    opts.conn.last_result.clear(opts.gpa);
+
     const prntbuf = opts.conn.execute(
         opts.io,
         opts.gpa,
@@ -257,6 +260,12 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     defer opts.gpa.free(prntbuf);
     
     try pager.page(opts.io, opts.pager.*, prntbuf);
+
+    // Diagnostics
+    var outbuf: [4096]u8 = undefined;
+    var stderr: Io.File.Writer = Io.File.stderr().writer(opts.io, &outbuf);
+    try stderr.interface.print("{f}\n", .{ opts.conn.pmon });
+    try stderr.interface.flush();
 }
 
 

@@ -15,6 +15,10 @@ fn needsQuote(slot: []const u8) bool {
 }
 
 pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.ArrowStreamBuffer) !void {
+    if (asb.metadata == null) {
+        return error.NoResultSetError;
+    }
+
     var maxw: usize = 0;
     for (asb.metadata.?, 0..) |col, i| {
         _ = try w.write(col.name);
