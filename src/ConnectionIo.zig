@@ -2,9 +2,10 @@ const std = @import("std");
 const c = @import("c");
 const adbc = @import("adbc");
 
-const format = @import("format.zig");
 const mesg = @import("message.zig");
 const perf = @import("perf.zig");
+
+const TableWriter = @import("render/TableWriter.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -132,7 +133,9 @@ pub fn execute(
     self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result);
     self.pmon.rows = self.last_result.countRows();
 
-    const bufsz = format.calcResultBufSize(self.last_result.metadata.?, self.pmon.rows);
+    const bufsz = TableWriter.calcResultBufSize(
+        self.last_result.metadata.?,
+        self.pmon.rows);
 
     self.pmon.proc = self.pmon.lap(io);
 
@@ -142,7 +145,7 @@ pub fn execute(
     // calculating the required buffer size ahead of time, instead of
     // dynamically allocating to build the string at print time, we save
     // a substantial amount of time rendering.
-    try format.printStreamBuffer(&prntbuf, &self.last_result);
+    try TableWriter.write(&prntbuf, &self.last_result);
 
     self.pmon.rend = self.pmon.lap(io);
 

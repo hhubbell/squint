@@ -2,15 +2,13 @@ const std = @import("std");
 const adbc = @import("adbc");
 const c = @import("c");
 
+const Color = @import("Color.zig");
+
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 
 const PAD: usize = 2;
-pub const GREY: []const u8 = "\x1b[37m";
-pub const RED: []const u8 = "\x1b[31m";
-pub const YELLOW: []const u8 = "\x1b[33m";
-pub const RESET: []const u8 = "\x1b[0m";
 
 pub const HorizontalSeparator = enum { Top, Middle, Bottom };
 
@@ -29,9 +27,11 @@ pub const Box = struct {
 };
 
 
-/// Determine the required buffer size for printing a stream result set
+/// Determine the required buffer size for printing a stream result set. By
+// calculating the required buffer size ahead of time, instead of dynamically
+// allocating to build the string at print time, we save a substantial amount
+// of time rendering.
 pub fn calcResultBufSize(meta: []adbc.ColMetadata, rows: u64) u64 {
-
     // Determine the buffer size needed to print a single row
     const row_buf: u64 = calcRowBufSize(meta);
 
@@ -99,7 +99,7 @@ pub fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = 0;
 
     for (meta) |col| {
-        accum += @intCast(col.color_slots * (GREY.len + RESET.len));
+        accum += @intCast(col.color_slots * (Color.Grey.len + Color.Reset.len));
     }
 
     return accum;
@@ -220,18 +220,14 @@ pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: Hor
     return idx;
 }
 
-pub fn printStreamBuffer(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
+pub fn write(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
     const box_w = calcRowBoxSize(asb.metadata.?);
-
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    try adbc.err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &asb.schema, &asb.err));
-    defer _ = c.ArrowArrayViewReset(&view);
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
     for (0..asb.filled) |i| {
-        const batch = asb.items[i];
-        try adbc.err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &asb.err));
+        var view = try asb.asArrayView(i);
+        defer _ = c.ArrowArrayViewReset(&view);
 
         for (0..asb.countBatchRows(i)) |r_i| {
             var rowbuf = buffer.*[idx..];
@@ -242,16 +238,17 @@ pub fn printStreamBuffer(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
 
             for (0..@intCast(view.n_children)) |c_i| {
                 const col = view.children[c_i];
+
                 var byte_w = asb.metadata.?[c_i].bytes + PAD;
                 var cb_idx: usize = 0;
 
                 if (adbc.meta.isNull(col, r_i)) {
                     // We need a slightly larger buffer for printing values with
                     // color highlighting
-                    byte_w += GREY.len + RESET.len;
+                    byte_w += Color.Grey.len + Color.Reset.len;
 
                     var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
-                    cb_idx += padCenterValue(&colbuf, GREY ++ "null" ++ RESET);
+                    cb_idx += padCenterValue(&colbuf, Color.Grey ++ "null" ++ Color.Reset);
                 } else {
                     var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
                     const val_str = adbc.meta.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const format = @import("format.zig");
+const Color = @import("render/Color.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -137,8 +137,8 @@ pub const MessageBuffer = struct {
 
         if (last_err == null) {
             try writer.print("{s}No error messages.{s}\n", .{
-                format.GREY,
-                format.RESET
+                Color.Grey,
+                Color.Reset
             });
             return;
         }
@@ -150,8 +150,8 @@ pub const MessageBuffer = struct {
     pub fn printAllErrs(self: *Self, writer: *std.Io.Writer) !void {
         if (self.numErrs() == 0) {
             try writer.print("{s}No error messages.{s}\n", .{
-                format.GREY,
-                format.RESET
+                Color.Grey,
+                Color.Reset
             });
             return;
         }
@@ -163,9 +163,9 @@ pub const MessageBuffer = struct {
             const ith_msg = self.stack[pt].?;
             if (ith_msg.isErr()) {
                 try writer.print("{s}{d}{s} {s}\n", .{
-                    format.RED,
+                    Color.Red,
                     i,
-                    format.RESET,
+                    Color.Reset,
                     ith_msg.msg orelse "<err>"
                 });
             }

@@ -3,7 +3,6 @@ const adbc = @import("adbc");
 const c = @import("c");
 
 const cli = @import("cli.zig");
-const format = @import("format.zig");
 const input = @import("input.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
@@ -13,11 +12,11 @@ const version = @import("build_options").version;
 
 const ConnectionCatalog = @import("ConnectionCatalog.zig");
 const ConnectionIo = @import("ConnectionIo.zig");
+const Color = @import("render/Color.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const posix = std.posix;
-
 
 const StartupParams = struct {
     config: ?adbc.AdbcConfig,
@@ -26,9 +25,9 @@ const StartupParams = struct {
     mesg: ?*mesg.MessageBuffer
 };
 
+
 /// Print startup information
 fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
-
     try writer.print("Squint {f} | ADBC CLI\n"
         ++ "Type \".help\" for dotcommands. "
         ++ "Type \".exit\" or ^D to quit.\n", .{version});
@@ -63,9 +62,9 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
         const n_err = parms.mesg.?.numErrs();
 
         if (n_err > 0) {
-            try writer.print("\n{s}Startup Errors ({d}):\n", .{format.RED, n_err});
+            try writer.print("\n{s}Startup Errors ({d}):\n", .{Color.Red, n_err});
             try parms.mesg.?.printAllErrs(writer);
-            try writer.print("{s}", .{format.RESET});
+            try writer.print("{s}", .{Color.Reset});
         }
     }
 

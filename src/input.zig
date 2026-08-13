@@ -2,13 +2,14 @@ const std = @import("std");
 const adbc = @import("adbc");
 const c = @import("c");
 
-const format = @import("format.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
 
 const ConnectionCatalog = @import("ConnectionCatalog.zig");
 const ConnectionIo = @import("ConnectionIo.zig");
+const Color = @import("render/Color.zig");
 const CsvWriter = @import("render/CsvWriter.zig");
+const TableWriter = @import("render/TableWriter.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -106,7 +107,7 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     for (catalog.catalogs(), 0..) |obj, i| {
         if (i == catalog.current_database) {
             try writer.interface.print("* {s}{s}{s}\n", .{
-                format.YELLOW, obj.name, format.RESET
+                Color.Yellow, obj.name, Color.Reset
             });
         } else {
             try writer.interface.print("{s}\n", .{obj.name});
@@ -180,14 +181,16 @@ fn dcPager(args: *TokenIter, opts: DotCommandOptions) !void {
     const page: ?[]const u8 = args.next();
 
     if (page == null) {
-        opts.msg.addErr("Invalid .pager invocation. Call .pager [less|more|nopager]", .{});
+        opts.msg.addErr("Invalid .pager invocation. "
+            ++ "Call .pager [less|more|nopager]", .{});
         return error.DotCommandError;
     }
 
     const typ: ?pager.PagerType = std.meta.stringToEnum(pager.PagerType, page.?);
 
     if (typ == null) {
-        opts.msg.addErr("{s} is not a supported pager. Call .pager [less|more|nopager]", .{page.?});
+        opts.msg.addErr("{s} is not a supported pager. "
+            ++ "Call .pager [less|more|nopager]", .{page.?});
         return error.DotCommandError;
     }
 
@@ -242,60 +245,17 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    var stmt: c.AdbcStatement = adbc.prepareStatement(
-        buffer,
-        &opts.conn.conn,
-        opts.conn.errPtr()
+    const prntbuf = opts.conn.execute(
+        opts.io,
+        opts.gpa,
+        opts.msg,
+        buffer
     ) catch {
         opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()});
         return error.DotCommandError;
     };
-    defer adbc.err.checkAdbc(c.AdbcStatementRelease(&stmt, opts.conn.errPtr()))
-        catch @panic("Failed to release statement.");
-
-    var strm: c.ArrowArrayStream = adbc.executeWithCancel(opts.io,
-        &stmt,
-        opts.conn.errPtr()
-    ) catch |err| {
-        switch (err) {
-            error.Canceled => opts.msg.addErr("Execution canceled.", .{}),
-            else => opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()})
-        }
-        return error.DotCommandError;
-    };
-
-    defer if (strm.release) |release| release(&strm);
-    
-    var res: adbc.ArrowStreamBuffer = undefined;
-    if (opts.conn.row_limit == null) {
-        res = try .initBuffers(opts.gpa, 64);
-    } else {
-        res = try .initRows(opts.gpa, opts.conn.row_limit.?);
-    }
-    defer res.deinit(opts.gpa);
-
-    adbc.readStream(opts.gpa, &strm, &res) catch |err| {
-        switch (err) {
-            error.NanoArrowStreamError =>
-                adbc.err.onNanoArrowStreamErrMsg(&strm,
-                    @typeInfo(@TypeOf(opts.msg)).pointer.child,
-                    opts.msg,
-                    mesg.MessageBuffer.addErr),
-            error.NanoArrowError => opts.msg.addErr("{s}", .{res.err.message}),
-            error.AdbcLibError => opts.msg.addErr("ADBC Library Error.", .{}),
-            else => opts.msg.addErr("Uncaught Error.", .{})
-        }
-
-        return error.DotCommandError;
-    };
-
-    res.metadata = try adbc.calcColumnMetadata(opts.io, opts.gpa, &res);
-
-    const bufsz = format.calcResultBufSize(res.metadata.?, res.countRows());
-    var prntbuf = try opts.gpa.alloc(u8, bufsz);
     defer opts.gpa.free(prntbuf);
-
-    try format.printStreamBuffer(&prntbuf, &res);
+    
     try pager.page(opts.io, opts.pager.*, prntbuf);
 }
 
