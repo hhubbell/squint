@@ -334,9 +334,81 @@ pub fn fromEpochMicro(us: i64) Self {
     return fromEpochMs(@divFloor(us, 1000));
 }
 
+test "fromEpochMicro" {
+    try std.testing.expectEqual(
+        Self{
+            .datepart = .{
+                .year=1970,
+                .month=1,
+                .day=1
+            },
+            .timepart = .{
+                .hour=0,
+                .minute=0,
+                .second=0,
+                .millisecond=0
+            }
+        },
+        fromEpochMicro(0)
+    );
+
+    try std.testing.expectEqual(
+        Self{
+            .datepart = .{
+                .year=2026,
+                .month=1,
+                .day=1
+            },
+            .timepart = .{
+                .hour=11,
+                .minute=22,
+                .second=33,
+                .millisecond=456
+            }
+        },
+        fromEpochMicro(1767266553456999)
+    );
+}
+
 /// Convert an int representing the number of nanoseconds since the UNIX epoch
 /// to a DateTime struct. See https://howardhinnant.github.io/date_algorithms.html
 /// for more details.
 pub fn fromEpochNano(ns: i64) Self {
     return fromEpochMs(@divFloor(ns, 1000000));
+}
+
+test "fromEpochNano" {
+    try std.testing.expectEqual(
+        Self{
+            .datepart = .{
+                .year=1970,
+                .month=1,
+                .day=1
+            },
+            .timepart = .{
+                .hour=0,
+                .minute=0,
+                .second=0,
+                .millisecond=0
+            }
+        },
+        fromEpochNano(0)
+    );
+
+    try std.testing.expectEqual(
+        Self{
+            .datepart = .{
+                .year=2026,
+                .month=1,
+                .day=1
+            },
+            .timepart = .{
+                .hour=11,
+                .minute=22,
+                .second=33,
+                .millisecond=456
+            }
+        },
+        fromEpochNano(1767266553456999888)
+    );
 }
