@@ -38,7 +38,7 @@ pub fn init(io: Io, gpa: Allocator) !Self {
         // user's stdout.
         // TODO: To support .save we are breaking row limits. This API needs
         // some work anyway so it's fine.
-        .last_result = try .initRows(gpa, 10_240)
+        .last_result = try .initBuffers(gpa, 16)
     };
 }
 

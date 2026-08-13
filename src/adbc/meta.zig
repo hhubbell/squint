@@ -100,12 +100,13 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
     // If we got an empty result set, we need to ensure we have at
     // least one thread
     const res_set: usize = @max(buffer.filled, 1);
-    const threads: usize = @min(res_set, 16);
-    const chunks: usize = try std.math.divCeil(usize, n_tasks, threads);
+    const max_threads: usize = @min(res_set, 16);
+    const chunksz: usize = try std.math.divCeil(usize, n_tasks, max_threads);
+    const threads: usize = try std.math.divCeil(usize, n_tasks, chunksz);
 
     for (0..threads) |i| {
-        const beg: usize = i * chunks;
-        const end: usize = @min((i + 1) * chunks, n_tasks);
+        const beg: usize = i * chunksz;
+        const end: usize = @min((i + 1) * chunksz, n_tasks);
 
         const chunk_idx = indexes[beg..end];
 
