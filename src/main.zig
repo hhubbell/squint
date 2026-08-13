@@ -125,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
     //  the output. But this is not currently something we do anything with.
     const winsize = windowSize(Io.File.stdout().handle, &msg);
 
-    const page_exec = pager.whichPager(io, init.environ_map);
+    var page_exec = pager.whichPager(io, init.environ_map);
 
     var conn: ConnectionIo = try .init(io, gpa);
     conn.connect(gpa, cfg) catch {
@@ -184,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
                     .conn = &conn,
                     .gpa = gpa,
                     .io = io,
-                    .pager = page_exec
+                    .pager = &page_exec
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };

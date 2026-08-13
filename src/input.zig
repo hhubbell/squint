@@ -33,7 +33,7 @@ pub const DotCommandOptions = struct {
     conn: *ConnectionIo,
     gpa: Allocator,
     io: Io,
-    pager: pager.PagerType
+    pager: *pager.PagerType
 };
 
 const DotCommand = struct {
@@ -60,6 +60,9 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
     .{ ".nolimit", DotCommand {
         .help = "Return result sets unlimited",
         .call = dcNoLimit }},
+    .{ ".pager", DotCommand {
+        .help = "Change the pager to [less|more|nopager]",
+        .call = dcPager }},
     .{ ".save", DotCommand {
         .help = "Write the result set to file",
         .call = dcSave }},
@@ -173,6 +176,24 @@ fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     opts.conn.row_limit = null;
 }
 
+fn dcPager(args: *TokenIter, opts: DotCommandOptions) !void {
+    const page: ?[]const u8 = args.next();
+
+    if (page == null) {
+        opts.msg.addErr("Invalid .pager invocation. Call .pager [less|more|nopager]", .{});
+        return error.DotCommandError;
+    }
+
+    const typ: ?pager.PagerType = std.meta.stringToEnum(pager.PagerType, page.?);
+
+    if (typ == null) {
+        opts.msg.addErr("{s} is not a supported pager. Call .pager [less|more|nopager]", .{page.?});
+        return error.DotCommandError;
+    }
+
+    opts.pager.* = typ.?;
+}
+
 fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     var file: Io.File = undefined; 
     if (args.next()) |fname| {
@@ -275,7 +296,7 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     defer opts.gpa.free(prntbuf);
 
     try format.printStreamBuffer(&prntbuf, &res);
-    try pager.page(opts.io, opts.pager, prntbuf);
+    try pager.page(opts.io, opts.pager.*, prntbuf);
 }
 
 
