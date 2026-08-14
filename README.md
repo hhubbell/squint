@@ -57,7 +57,7 @@ but not natively. It is unlikely that Windows will be supported natively.
 ## Usage
 
 ```
-squint 0.0.0-dev.r6
+squint 0.0.0-dev.r7
 
 Usage: squint [DRIVER] [ARGS]
 
