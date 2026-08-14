@@ -14,7 +14,7 @@ fn needsQuote(slot: []const u8) bool {
     return false;
 }
 
-pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.ArrowStreamBuffer) !void {
+pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.TableBuffer) !void {
     if (asb.metadata == null) {
         return error.NoResultSetError;
     }
@@ -33,7 +33,7 @@ pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.ArrowStreamBuffer) !void 
     const backing = try gpa.alloc(u8, maxw);
     defer gpa.free(backing);
 
-    for (0..asb.filled) |i| {
+    for (0..asb.countBatches()) |i| {
         var view = try asb.asArrayView(i);
         defer _ = c.ArrowArrayViewReset(&view);
 

@@ -220,12 +220,12 @@ pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: Hor
     return idx;
 }
 
-pub fn write(buffer: *[]u8, asb: *adbc.ArrowStreamBuffer) !void {
+pub fn write(buffer: *[]u8, asb: *adbc.TableBuffer) !void {
     const box_w = calcRowBoxSize(asb.metadata.?);
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
-    for (0..asb.filled) |i| {
+    for (0..asb.countBatches()) |i| {
         var view = try asb.asArrayView(i);
         defer _ = c.ArrowArrayViewReset(&view);
 

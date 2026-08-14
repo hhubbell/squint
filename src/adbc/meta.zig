@@ -4,8 +4,8 @@ const date = @import("date");
 
 const err = @import("err.zig");
 
-const ArrowStreamBuffer = @import("StreamBuffer.zig");
-const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
+const StreamBuffer = @import("StreamBuffer.zig");
+const TableBuffer = @import("TableBuffer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -73,24 +73,26 @@ const BufferIndexTuple = struct {
 };
 
 /// Generate a slice of ColMetadata
-pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) ![]ColMetadata {
-    const header = try getHeader(alloc, &buffer.schema);
+pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMetadata {
+    buffer.metadata = try getHeader(gpa, &buffer.buffer.schema);
 
-    const indexes = try BufferIndexTuple.initSlice(alloc, buffer.filled, header.len);
-    defer alloc.free(indexes);
+    const n_batches = buffer.countBatches();
+
+    const indexes = try BufferIndexTuple.initSlice(gpa, n_batches, buffer.metadata.?.len);
+    defer gpa.free(indexes);
 
     const n_tasks: usize = indexes.len;
 
     // TODO: Does the queue have to be the size of the total number of items?
     // Or should we keep it smaller and some threads will be blocked until the
     // consumer can clear them out?
-    const q_buf = try alloc.alloc(ColFmt, n_tasks);
-    defer alloc.free(q_buf);
+    const q_buf = try gpa.alloc(ColFmt, n_tasks);
+    defer gpa.free(q_buf);
 
     var queue: Io.Queue(ColFmt) = .init(q_buf);
 
     var consumer = try io.concurrent(consumeResult, .{
-        io, &queue, n_tasks, header
+        io, &queue, n_tasks, buffer.metadata.?
     });
     defer _ = consumer.cancel(io) catch {};
 
@@ -99,7 +101,7 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
 
     // If we got an empty result set, we need to ensure we have at
     // least one thread
-    const res_set: usize = @max(buffer.filled, 1);
+    const res_set: usize = @max(n_batches, 1);
     const max_threads: usize = @min(res_set, 16);
     const chunksz: usize = try std.math.divCeil(usize, n_tasks, max_threads);
     const threads: usize = try std.math.divCeil(usize, n_tasks, chunksz);
@@ -111,7 +113,7 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
         const chunk_idx = indexes[beg..end];
 
         grp.concurrent(io, produceBatchMaximums, .{
-            io, &queue, chunk_idx, buffer, header
+            io, &queue, chunk_idx, buffer
         }) catch |e| {
             _ = try consumer.cancel(io);
             return e;
@@ -121,7 +123,7 @@ pub fn calcColumnMetadata(io: Io, alloc: Allocator, buffer: *ArrowStreamBuffer) 
     try consumer.await(io);
     try grp.await(io);
 
-    return header;
+    return buffer.metadata.?;
 }
 
 fn consumeResult(
@@ -147,10 +149,11 @@ pub fn produceBatchMaximums(
     io: Io,
     queue: *Io.Queue(ColFmt),
     indexes: []BufferIndexTuple,
-    buffer: *ArrowStreamBuffer,
-    //FIXME:
-    header: []ColMetadata
+    table: *TableBuffer
 ) !void {
+    var buffer = table.buffer;
+    const header = table.metadata.?;
+
     for (indexes) |i| {
         var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
         err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
@@ -409,42 +412,6 @@ pub fn extractValue(
         },
         else => return "<unknown>"
     }
-}
-
-/// TODO: Can this be generalized?
-/// TODO: Is this the right part of this module to house this?
-///
-/// This API is very specific but there are a number of use-cases where we need
-/// to pull the value as a string from a single-item result set. This is a
-/// helper on top of all the boilerplate for doing that.
-pub fn extractOneString(buf: *NewArrowStreamBuffer) !?[]const u8 {
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    try err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
-        &view,
-        &buf.schema,
-        &buf.err));
-    try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(
-        &view,
-        &buf.items[0],
-        &buf.err
-    ));
-
-    if (view.n_children < 1) {
-        return error.EmptySet;
-    }
-
-    const child: *c.ArrowArrayView = view.children[0];
-
-    if (c.ArrowArrayViewIsNull(child, 0) != 0) {
-        return null;
-    }
-
-    // Finally get the catalog name
-    const data_val = c.ArrowArrayViewGetStringUnsafe(child, 0);
-    const data_len: usize = @intCast(data_val.size_bytes);
-    const value: []const u8 = data_val.data[0..data_len];
-
-    return value;
 }
 
 /// Determine if an ArrowArray Slot is a null value

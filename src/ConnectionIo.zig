@@ -18,7 +18,7 @@ err: c.AdbcError,
 pmon: perf.PerfData,
 row_limit: ?usize = 10_240,
 rows_affected: i64 = 0,
-last_result: adbc.ArrowStreamBuffer,
+last_result: adbc.TableBuffer,
 
 pub fn init(io: Io, gpa: Allocator) !Self {
     return .{
@@ -26,19 +26,9 @@ pub fn init(io: Io, gpa: Allocator) !Self {
         .conn = std.mem.zeroInit(c.AdbcConnection, .{}),
         .err = std.mem.zeroInit(c.AdbcError, .{}),
         .pmon = .init(io),
-        // FIXME: This is just a basic implementation to test that the behavior
-        // is roughly working. We should rename these initializers, and perhaps
-        // move the initializer to a vtable-ish think on another struct, i.e.
-        // the ConnManager.
-        // Due to the behavior of the ArrowArray stream, any limit the user has
-        // set is actually rounded up to multiple of 1024. Because the limit is
-        // applied on the client side and not server side, this really doesn't
-        // have a noticeable impact on performance. It's more so a quality of
-        // life behavior to avoid accidentally dumping millions of rows to the
-        // user's stdout.
         // TODO: To support .save we are breaking row limits. This API needs
         // some work anyway so it's fine.
-        .last_result = try .initBuffers(gpa, 16)
+        .last_result = try .init(gpa, 16)
     };
 }
 
@@ -113,14 +103,14 @@ pub fn execute(
 
     self.pmon.exec = self.pmon.lap(io);
 
-    adbc.readStream(gpa, &strm, &self.last_result) catch |e| {
+    adbc.readStream(gpa, &strm, &self.last_result.buffer) catch |e| {
         switch (e) {
             error.NanoArrowStreamError =>
                 adbc.err.onNanoArrowStreamErrMsg(&strm,
                     @typeInfo(@TypeOf(msg)).pointer.child,
                     msg,
                     mesg.MessageBuffer.addErr),
-            error.NanoArrowError => msg.addErr("{s}", .{self.last_result.err.message}),
+            error.NanoArrowError => msg.addErr("{s}", .{self.last_result.lastErrMsg()}),
             error.AdbcLibError => msg.addErr("ADBC Library Error.", .{}),
             else => msg.addErr("Uncaught Error.", .{})
         }

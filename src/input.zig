@@ -254,7 +254,6 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         opts.msg,
         buffer
     ) catch {
-        opts.msg.addErr("{s}", .{opts.conn.lastErrMsg()});
         return error.DotCommandError;
     };
     defer opts.gpa.free(prntbuf);

@@ -2,82 +2,56 @@ const std = @import("std");
 const c = @import("c");
 
 const errs = @import("err.zig");
-const ColMetadata = @import("meta.zig").ColMetadata;
+const meta = @import("meta.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const Self = @This();
-const buf_growth: usize = 64;
 
 schema: c.ArrowSchema,
 items: []c.ArrowArray,
 err: c.ArrowError,
 filled: u64,
-fixed: bool,
-metadata: ?[]ColMetadata = null,
+growth: usize = 16,
 
 
-
-/// Initialize an ArrowStreamBuffer container based on a row count ceiling
-/// capacity. This buffer will NOT be resized if the stream yields more than
-/// the initialized buffers can hold.
-///
-/// The following is INCORRECT:
-/// Generally, an ArrowArray batch from an ArrowStream is 1024 rows. Given
-/// an initial capacity row value, the number of buffers initialized is the
-/// ceiling of that value divided by 1024.
-///
-/// This assumption was true for SQLite but not DuckDB. Other database
-/// drivers are unknown. This is not a dealbreaker, but we need to make the
-/// behavior of this consistent. E.g. can we set the driver page size? And
-/// should we refer to the limit in terms of pages?
-pub fn initRows(alloc: Allocator, capacity: u64) !Self {
-    // We assume that an ArrowArrayStream batch is 1024 rows. Based on the
-    // number of rows we wish to consume (`until`), calculate the max number
-    // of batches we could consume and allocate a buffer for the ArrowArrays.
-    const assumed_batch: u64 = 1024;
-    const max_batches: u64 = try std.math.divCeil(u64, capacity, assumed_batch);
-    const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, max_batches);
-
+/// Initialize a StreamBuffer container with an intial number of buffers.
+/// The number of available buffers can be resized during `add` if additional
+/// space is required. Call `addFixed` to avoid resizing. This call can return
+/// a FixedBufferExceeded error if the buffer is full.
+pub fn init(gpa: Allocator, capacity: u64) !Self {
     return .{
         .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-        .items = batch_buf,
+        .items = try gpa.alloc(c.ArrowArray, capacity),
         .err = std.mem.zeroInit(c.ArrowError, .{}),
-        .filled = 0,
-        .fixed = true};
+        .filled = 0};
 }
 
-/// Initialize an ArrowStreamBuffer container using a set number of buffers
-/// the can be resized. This initializer is slightly more simple than
-/// initRows.
-pub fn initBuffers(alloc: Allocator, capacity: u64) !Self {
-    const batch_buf: []c.ArrowArray = try alloc.alloc(c.ArrowArray, capacity);
-
-    return .{
-        .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
-        .items = batch_buf,
-        .err = std.mem.zeroInit(c.ArrowError, .{}),
-        .filled = 0,
-        .fixed = false};
+pub fn deinit(self: *Self, gpa: Allocator) void {
+    self.clear();    
+    gpa.free(self.items);
 }
 
-pub fn deinit(self: *Self, alloc: Allocator) void {
-    self.clear(alloc);
-    alloc.free(self.items);
-}
+pub fn add(self: *Self, gpa: Allocator, batch: c.ArrowArray) !void {
+    if (!self.hasCapacity()) {
+        try self.resize(gpa);
+    }
 
-pub fn add(self: *Self, batch: c.ArrowArray) void {
     self.items[self.filled] = batch;
-
     self.filled += 1;
 }
 
-pub fn canResize(self: *Self) bool {
-    return !self.fixed;
+pub fn addFixed(self: *Self, batch: c.ArrowArray) !void {
+    if (!self.hasCapacity()) {
+        return error.FixedBufferExceeded;
+    }
+
+    self.items[self.filled] = batch;
+    self.filled += 1;
 }
 
-pub fn clear(self: *Self, gpa: Allocator) void {
+pub fn clear(self: *Self) void {
     if (self.schema.release) |release| release(&self.schema);
 
     for (0..self.filled) |i| {
@@ -85,14 +59,12 @@ pub fn clear(self: *Self, gpa: Allocator) void {
         if (batch.release) |release| release(&batch);
     }
 
-    if (self.metadata != null) gpa.free(self.metadata.?);
-
     self.filled = 0;
-    self.metadata = null;
 }
 
 pub fn countBatchRows(self: *Self, i: usize) u64 {
-    // FIXME: Bounds check?
+    // NOTE: We specifically don't bounds check here because we expect the
+    // caller to ensure that `i` is within `self.items.len`.
     return @intCast(self.items[i].children[0].*.length);
 }
 
@@ -110,23 +82,21 @@ pub fn hasCapacity(self: *Self) bool {
     return self.filled < self.items.len;
 }
 
-pub fn setBatchSize(self: *Self, len: u64) void {
-    self.batch_sz[self.filled] = len;
+pub fn resize(self: *Self, gpa: Allocator) !void {
+    const bufsize = self.items.len + self.growth;
+    self.items = try gpa.realloc(self.items, bufsize);
 }
 
-pub fn resize(self: *Self, alloc: Allocator) !void {
-    const bufsize = self.items.len + Self.buf_growth;
-    self.items = try alloc.realloc(self.items, bufsize);
-}
-
+/// Return a StreamBuffer record as an ArrowArrayView
 pub fn asArrayView(self: *Self, buffer_i: usize) !c.ArrowArrayView {
     if (buffer_i >= self.filled) {
         return error.IndexOutOfBounds;
     }
 
     var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    // TODO: Should this be initialized and sent as a parameter to this
-    // function? Need to evaluate how expensive this Init call is.
+    // TODO: Should this be initialized once initially, and then used
+    // by this function to generate a view as-needed? 
+    // Need to evaluate how expensive this Init call is.
     try errs.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
         &view,
         &self.schema,
@@ -137,4 +107,25 @@ pub fn asArrayView(self: *Self, buffer_i: usize) !c.ArrowArrayView {
         &self.err));
 
     return view;
+}
+
+/// In some very specific cases, a StreamBuffer represents just one single
+/// string value. This is a helper function to make it easier to get the
+/// value.
+pub fn asOneString(self: *Self) !?[]const u8 {
+    const view = try self.asArrayView(0);
+
+    if (view.n_children < 1) {
+        return error.EmptySet;
+    }
+
+    const child: *c.ArrowArrayView = view.children[0];
+    if (meta.isNull(child, 0)) {
+        return null;
+    }
+
+    const raw = c.ArrowArrayViewGetStringUnsafe(child, 0);
+    const len: usize = @intCast(raw.size_bytes);
+
+    return raw.data[0..len];
 }

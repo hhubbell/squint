@@ -8,8 +8,8 @@ pub const meta = @import("meta.zig");
 pub const calcColumnMetadata = meta.calcColumnMetadata;
 pub const ColMetadata = meta.ColMetadata;
 
-pub const NewArrowStreamBuffer = @import("NewStreamBuffer.zig");
-pub const ArrowStreamBuffer = @import("StreamBuffer.zig");
+pub const StreamBuffer = @import("StreamBuffer.zig");
+pub const TableBuffer = @import("TableBuffer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -114,10 +114,10 @@ pub fn getInfo(
         errs));
     defer if (stream.release) |release| release(&stream);
 
-    var buf: NewArrowStreamBuffer = try .init(gpa, 1);
+    var buf: StreamBuffer = try .init(gpa, 1);
     defer buf.deinit(gpa);
 
-    try readStreamNew(gpa, &stream, &buf);
+    try readStream(gpa, &stream, &buf);
 
     // Currently we assume that getInfo only returns one value, and therefore
     // one buffer. This is unlikely to be true long term, so to remind myself
@@ -216,36 +216,10 @@ pub fn setDatabaseOption(
 
 /// Read an ArrowArrayStream into a storage buffer
 pub fn readStream(
-    alloc: Allocator,
-    stream: *c.ArrowArrayStream,
-    buffer: *ArrowStreamBuffer
-) anyerror!void {
-    const getSchema = stream.get_schema orelse return error.AdbcLibError;
-    const getNext = stream.get_next orelse return error.AdbcLibError;
-
-    try err.checkNanoArrowStream(getSchema(stream, &buffer.schema));
-
-    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(stream, &batch) == 0) {
-        if (batch.release == null) break;
-
-        if (!buffer.hasCapacity()) {
-            if (!buffer.canResize()) {
-                break;
-            }
-            try buffer.resize(alloc);
-        }
-
-        buffer.add(batch);
-    }
-}
-
-// Read an ArrowArrayStream into a storage buffer
-pub fn readStreamNew(
     gpa: Allocator,
     stream: *c.ArrowArrayStream,
-    buffer: *NewArrowStreamBuffer
-) !void {
+    buffer: *StreamBuffer
+) anyerror!void {
     const getSchema = stream.get_schema orelse return error.AdbcLibError;
     const getNext = stream.get_next orelse return error.AdbcLibError;
 

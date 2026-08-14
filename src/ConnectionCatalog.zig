@@ -275,7 +275,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     // Catalog
     try self.refreshCatalogList(gpa, conn);
 
-    var buf: adbc.NewArrowStreamBuffer = try .init(gpa, 1);
+    var buf: adbc.StreamBuffer = try .init(gpa, 1);
     defer buf.deinit(gpa);
 
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
@@ -285,9 +285,9 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
         conn.errPtr());
 
     try adbc.executeStatement(&stmt, &stream, conn.errPtr());
-    try adbc.readStreamNew(gpa, &stream, &buf);
+    try adbc.readStream(gpa, &stream, &buf);
 
-    var catalog = try adbc.meta.extractOneString(&buf);
+    var catalog = try buf.asOneString();
 
     // The connection profile did not specify a database, so we fallback to a
     // known database that exists for all client systems.
@@ -307,9 +307,9 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
             conn.errPtr());
 
         try adbc.executeStatement(&stmt, &stream, conn.errPtr());
-        try adbc.readStreamNew(gpa, &stream, &buf);
+        try adbc.readStream(gpa, &stream, &buf);
 
-        catalog = try adbc.meta.extractOneString(&buf);
+        catalog = try buf.asOneString();
     }
 
     if (catalog) |cat| {
@@ -332,9 +332,9 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
         conn.errPtr());
 
     try adbc.executeStatement(&stmt, &stream, conn.errPtr());
-    try adbc.readStreamNew(gpa, &stream, &buf);
+    try adbc.readStream(gpa, &stream, &buf);
 
-    var schema = try adbc.meta.extractOneString(&buf);
+    var schema = try buf.asOneString();
 
     // The connection profile did not specify a schema, so we fallback to a
     // known database that exists for all client systems.
@@ -354,9 +354,9 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
             conn.errPtr());
 
         try adbc.executeStatement(&stmt, &stream, conn.errPtr());
-        try adbc.readStreamNew(gpa, &stream, &buf);
+        try adbc.readStream(gpa, &stream, &buf);
 
-        schema = try adbc.meta.extractOneString(&buf);
+        schema = try buf.asOneString();
     }
 
     if (self.current_database < 0) return;
