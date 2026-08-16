@@ -10,33 +10,84 @@ const TableBuffer = @import("TableBuffer.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-const scale_s_per_s: usize = std.math.log10(1);
-const scale_ms_per_s: usize = std.math.log10(std.time.ms_per_s);
-const scale_us_per_s: usize = std.math.log10(std.time.us_per_s);
-const scale_ns_per_s: usize = std.math.log10(std.time.ns_per_s);
-
 
 pub const ColMetadata = struct {
+    const TypeFormat = union(enum) {
+        empty: struct {},
+        decimal: DecimalFmt,
+        time: TimeFmt 
+    };
+
     name: []const u8,
-    width: usize,
-    bytes: usize,
-    color_slots: usize,
     typeof: c.ArrowType,
-    // Decimal data
-    decimal: ?DecimalFmt,
-    // Time data
-    time: ?TimeFmt
+    data: ColFmt,
+    format: ?TypeFormat
 };
 
 const DecimalFmt = struct {
+    const Self = @This();
+
     width: i32,
     precision: i32,
-    scale: i32
+    scale: i32,
+
+    pub fn fromSchemaView(view: *c.ArrowSchemaView) Self {
+        return .{
+            .width = switch (view.type) {
+                c.NANOARROW_TYPE_DECIMAL32 => 32,
+                c.NANOARROW_TYPE_DECIMAL64 => 64,
+                c.NANOARROW_TYPE_DECIMAL128 => 128,
+                c.NANOARROW_TYPE_DECIMAL256 => 256,
+                else => unreachable
+            },
+            .precision = view.decimal_precision,
+            .scale = view.decimal_scale
+        };
+    }
 };
 
 const TimeFmt = struct {
+    const Self = @This();
+
+    const scale_s_per_s: usize = std.math.log10(1);
+    const scale_ms_per_s: usize = std.math.log10(std.time.ms_per_s);
+    const scale_us_per_s: usize = std.math.log10(std.time.us_per_s);
+    const scale_ns_per_s: usize = std.math.log10(std.time.ns_per_s);
+
     unit: c.ArrowTimeUnit,
-    scale: i64
+    scale: i64,
+
+    pub fn fromSchemaView(view: *c.ArrowSchemaView) !Self {
+        const meta = view.schema.*.metadata;
+        var scale: i64 = 9;
+
+        if (meta != null) {
+            const key: c.ArrowStringView = c.ArrowCharView("scale");
+            var val: c.ArrowStringView = std.mem.zeroInit(c.ArrowStringView, .{});
+
+            try err.checkNanoArrow(c.ArrowMetadataGetValue(meta, key, &val));
+
+            if (val.size_bytes > 0) {
+                scale = try std.fmt.parseInt(i64, val.data[0..@intCast(val.size_bytes)], 10);
+            }
+        }
+
+        // If the scale is in s, ms, us, or ns, then use the time_unit that
+        // came with the schema. Otherwise, we will need to rescale to ns
+        // before we can convert to a DateTime
+        const unit = switch (scale) {
+            scale_s_per_s,
+            scale_ms_per_s,
+            scale_us_per_s,
+            scale_ns_per_s => view.time_unit,
+            else => c.NANOARROW_TIME_UNIT_NANO
+        };
+
+        return .{
+            .unit = unit,
+            .scale = scale,
+        };
+    }
 };
 
 const ColFmt = struct {
@@ -145,13 +196,13 @@ fn consumeResult(
         const res = try queue.getOne(io);
         const j = res.col_i;
 
-        header[j].width = @max(header[j].width, res.width);
-        header[j].bytes = @max(header[j].bytes, res.bytes);
-        header[j].color_slots += res.color_slots;
+        header[j].data.width = @max(header[j].data.width, res.width);
+        header[j].data.bytes = @max(header[j].data.bytes, res.bytes);
+        header[j].data.color_slots += res.color_slots;
     }
 }
 
-pub fn produceBatchMaximums(
+fn produceBatchMaximums(
     io: Io,
     queue: *Io.Queue(ColFmt),
     indexes: []BufferIndexTuple,
@@ -202,13 +253,13 @@ pub fn produceBatchMaximums(
 }
 
 fn getHeader(
-    alloc: Allocator,
+    gpa: Allocator,
     schema: *c.ArrowSchema,
 ) ![]ColMetadata {
     var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
     const n_cols: usize = @intCast(schema.n_children);
 
-    var result: []ColMetadata = try alloc.alloc(ColMetadata, n_cols);
+    var result: []ColMetadata = try gpa.alloc(ColMetadata, n_cols);
 
     for (0..n_cols) |i| {
         const col: *c.ArrowSchema = schema.children[i];
@@ -217,65 +268,23 @@ fn getHeader(
         var view: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
         try err.checkNanoArrow(c.ArrowSchemaViewInit(&view, col, &a_err));
 
-        // Store the decimal storage width if we are dealing with a DECIMAL
-        var dec: ?DecimalFmt = null;
+        var format: ColMetadata.TypeFormat = .empty;
         if (isDecimal(&view)) {
-            dec = .{
-                .width = switch (view.type) {
-                    c.NANOARROW_TYPE_DECIMAL32 => 32,
-                    c.NANOARROW_TYPE_DECIMAL64 => 64,
-                    c.NANOARROW_TYPE_DECIMAL128 => 128,
-                    c.NANOARROW_TYPE_DECIMAL256 => 256,
-                    else => unreachable
-                },
-                .precision = view.decimal_precision,
-                .scale = view.decimal_scale
-            };
-        }
-
-        var tm: ?TimeFmt = null;
-        if (isDatetime(&view)) {
-            var reader = std.mem.zeroInit(c.ArrowMetadataReader, .{});
-            try err.checkNanoArrow(c.ArrowMetadataReaderInit(&reader, col.metadata));
-
-            var scale: i64 = 9;
-
-            if (col.metadata != null) {
-                const key: c.ArrowStringView = c.ArrowCharView("scale");
-                var val: c.ArrowStringView = std.mem.zeroInit(c.ArrowStringView, .{});
-
-                try err.checkNanoArrow(c.ArrowMetadataGetValue(col.metadata, key, &val));
-
-                if (val.size_bytes > 0) {
-                    scale = try std.fmt.parseInt(i64, val.data[0..@intCast(val.size_bytes)], 10);
-                }
-            }
-
-            // If the scale is in s, ms, us, or ns, then use the time_unit that
-            // came with the schema. Otherwise, we will need to rescale to ns
-            // before we can convert to a DateTime
-            const unit = switch (scale) {
-                scale_s_per_s,
-                scale_ms_per_s,
-                scale_us_per_s,
-                scale_ns_per_s => view.time_unit,
-                else => c.NANOARROW_TIME_UNIT_NANO
-            };
-
-            tm = .{
-                .unit = unit,
-                .scale = scale,
-            };
+            format.decimal = DecimalFmt.fromSchemaView(&view);
+        } else if (isDatetime(&view)) {
+            format.time = try TimeFmt.fromSchemaView(&view);
         }
 
         result[i] = .{
             .name = name,
-            .width = name.len,
-            .bytes = name.len,
-            .color_slots = 0,
             .typeof = view.type,
-            .decimal = dec,
-            .time = tm
+            .data = .{
+                .width = name.len,
+                .bytes = name.len,
+                .color_slots = 0,
+                .col_i = i
+            },
+            .format = format
         };
     }
 
@@ -315,15 +324,16 @@ pub fn extractValue(
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
             // Arrow DATE64/TIMESTAMP: int64_t units since UNIX Epoch
+            const cust: TimeFmt = meta.format.?.time;
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
-            const dt: date.DateTime = switch (meta.time.?.unit) {
+            const dt: date.DateTime = switch (cust.unit) {
                 c.NANOARROW_TIME_UNIT_SECOND => .fromEpochSec(val),
                 c.NANOARROW_TIME_UNIT_MILLI => .fromEpochMs(val),
                 c.NANOARROW_TIME_UNIT_MICRO => .fromEpochMicro(val),
                 c.NANOARROW_TIME_UNIT_NANO => blk: {
                     // A timestamp value in nanoseconds may require rescaling
                     // due to some vendor implementations.
-                    const upscale: i64 = std.math.pow(i64, 10, 9 - meta.time.?.scale);
+                    const upscale: i64 = std.math.pow(i64, 10, 9 - cust.scale);
                     break :blk .fromEpochNano(val * upscale);
                 },
                 else => unreachable
@@ -332,8 +342,9 @@ pub fn extractValue(
         },
         c.NANOARROW_TYPE_TIME32,
         c.NANOARROW_TYPE_TIME64 => {
+            const cust: TimeFmt = meta.format.?.time;
             const val = c.ArrowArrayViewGetIntUnsafe(view, row);
-            const ts: date.Time = switch (meta.time.?.unit) {
+            const ts: date.Time = switch (cust.unit) {
                 c.NANOARROW_TIME_UNIT_SECOND => .fromMidnightSec(@intCast(val)),
                 c.NANOARROW_TIME_UNIT_MILLI => .fromMidnightMs(@intCast(val)),
                 c.NANOARROW_TIME_UNIT_MICRO => .fromMidnightMicro(@intCast(val)),
@@ -398,11 +409,12 @@ pub fn extractValue(
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
         c.NANOARROW_TYPE_DECIMAL256 => {
+            const cust: DecimalFmt = meta.format.?.decimal;
             var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
-                meta.decimal.?.width,
-                meta.decimal.?.precision,
-                meta.decimal.?.scale);
+                cust.width,
+                cust.precision,
+                cust.scale);
             c.ArrowArrayViewGetDecimalUnsafe(view, row, &dec);
 
             var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});
@@ -560,11 +572,12 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         c.NANOARROW_TYPE_DECIMAL64,
         c.NANOARROW_TYPE_DECIMAL128,
         c.NANOARROW_TYPE_DECIMAL256 => {
+            const cust: DecimalFmt = meta.format.?.decimal;
             var dec: c.ArrowDecimal = std.mem.zeroInit(c.ArrowDecimal, .{});
             c.ArrowDecimalInit(&dec,
-                meta.decimal.?.width,
-                meta.decimal.?.precision,
-                meta.decimal.?.scale);
+                cust.width,
+                cust.precision,
+                cust.scale);
             c.ArrowArrayViewGetDecimalUnsafe(col, row, &dec);
 
             var val: c.ArrowBuffer = std.mem.zeroInit(c.ArrowBuffer, .{});

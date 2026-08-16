@@ -25,7 +25,7 @@ pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.TableBuffer) !void {
 
         if (i < asb.metadata.?.len - 1) _ = try w.write(",");
 
-        maxw = @max(maxw, col.width);
+        maxw = @max(maxw, col.data.width);
     }
 
     _ = try w.write("\n");

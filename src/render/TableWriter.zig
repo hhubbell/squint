@@ -69,7 +69,7 @@ pub fn calcRowBufSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = sep_w; 
 
     for (meta) |col| {
-        accum += col.bytes + PAD + sep_w;
+        accum += col.data.bytes + PAD + sep_w;
     }
 
     accum += nl_w;
@@ -86,7 +86,7 @@ pub fn calcRowBoxSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = sep_w; 
 
     for (meta) |col| {
-        accum += ((col.width + PAD) * sep_w) + sep_w;
+        accum += ((col.data.width + PAD) * sep_w) + sep_w;
     }
 
     accum += nl_w;
@@ -99,7 +99,7 @@ pub fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = 0;
 
     for (meta) |col| {
-        accum += @intCast(col.color_slots * (Color.Grey.len + Color.Reset.len));
+        accum += @intCast(col.data.color_slots * (Color.Grey.len + Color.Reset.len));
     }
 
     return accum;
@@ -160,7 +160,7 @@ pub fn printHeader(buffer: *[]u8, header: []adbc.ColMetadata) usize {
     idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
 
     for (header) |col| {
-        var colbuf: []u8 = fmtbuf[idx..idx + col.width + PAD];
+        var colbuf: []u8 = fmtbuf[idx..idx + col.data.width + PAD];
         idx += padCenterValue(&colbuf, col.name);
         idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
     }
@@ -204,7 +204,7 @@ pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: Hor
     for (header, 0..) |col, i| {
         // There's probably a neat way to do this without a loop
         // but tricky w/ unicode
-        for (0..col.width + PAD) |_| {
+        for (0..col.data.width + PAD) |_| {
             idx += writeBuffer(buffer, Box.HorizSep, idx);
         }
 
@@ -239,7 +239,7 @@ pub fn write(buffer: *[]u8, asb: *adbc.TableBuffer) !void {
             for (0..@intCast(view.n_children)) |c_i| {
                 const col = view.children[c_i];
 
-                var byte_w = asb.metadata.?[c_i].bytes + PAD;
+                var byte_w = asb.metadata.?[c_i].data.bytes + PAD;
                 var cb_idx: usize = 0;
 
                 if (adbc.meta.isNull(col, r_i)) {
