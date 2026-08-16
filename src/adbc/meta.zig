@@ -73,12 +73,18 @@ const BufferIndexTuple = struct {
 };
 
 /// Generate a slice of ColMetadata
-pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMetadata {
-    buffer.metadata = try getHeader(gpa, &buffer.buffer.schema);
+pub fn calcColumnMetadata(
+    io: Io,
+    gpa: Allocator,
+    buffer: *StreamBuffer
+) ![]ColMetadata {
+    const header = try getHeader(gpa, &buffer.schema);
 
-    const n_batches = buffer.countBatches();
+    if (buffer.filled == 0) {
+        return header;
+    }
 
-    const indexes = try BufferIndexTuple.initSlice(gpa, n_batches, buffer.metadata.?.len);
+    const indexes = try BufferIndexTuple.initSlice(gpa, buffer.filled, header.len);
     defer gpa.free(indexes);
 
     const n_tasks: usize = indexes.len;
@@ -92,7 +98,7 @@ pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMe
     var queue: Io.Queue(ColFmt) = .init(q_buf);
 
     var consumer = try io.concurrent(consumeResult, .{
-        io, &queue, n_tasks, buffer.metadata.?
+        io, &queue, n_tasks, header
     });
     defer _ = consumer.cancel(io) catch {};
 
@@ -101,7 +107,7 @@ pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMe
 
     // If we got an empty result set, we need to ensure we have at
     // least one thread
-    const res_set: usize = @max(n_batches, 1);
+    const res_set: usize = @max(buffer.filled, 1);
     const max_threads: usize = @min(res_set, 16);
     const chunksz: usize = try std.math.divCeil(usize, n_tasks, max_threads);
     const threads: usize = try std.math.divCeil(usize, n_tasks, chunksz);
@@ -113,7 +119,7 @@ pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMe
         const chunk_idx = indexes[beg..end];
 
         grp.concurrent(io, produceBatchMaximums, .{
-            io, &queue, chunk_idx, buffer
+            io, &queue, chunk_idx, header, buffer
         }) catch |e| {
             _ = try consumer.cancel(io);
             return e;
@@ -123,7 +129,7 @@ pub fn calcColumnMetadata(io: Io, gpa: Allocator, buffer: *TableBuffer) ![]ColMe
     try consumer.await(io);
     try grp.await(io);
 
-    return buffer.metadata.?;
+    return header;
 }
 
 fn consumeResult(
@@ -149,11 +155,9 @@ pub fn produceBatchMaximums(
     io: Io,
     queue: *Io.Queue(ColFmt),
     indexes: []BufferIndexTuple,
-    table: *TableBuffer
+    header: []ColMetadata,
+    buffer: *StreamBuffer
 ) !void {
-    var buffer = table.buffer;
-    const header = table.metadata.?;
-
     for (indexes) |i| {
         var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
         err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(

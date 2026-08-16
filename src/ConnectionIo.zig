@@ -120,7 +120,7 @@ pub fn execute(
     self.pmon.load = self.pmon.lap(io);
 
     // TODO move this to a new TableStreamBuffer interface
-    self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result);
+    self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result.buffer);
     self.pmon.rows = self.last_result.countRows();
 
     const bufsz = TableWriter.calcResultBufSize(
