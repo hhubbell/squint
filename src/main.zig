@@ -132,6 +132,37 @@ pub fn main(init: std.process.Init) !void {
     };
     defer _ = conn.deinit(gpa) catch {};
 
+    if (argp.vargs.get("exec")) |cmd| {
+        const cmdz: [:0] const u8 = try gpa.dupeSentinel(u8, cmd, 0);
+        defer gpa.free(cmdz);
+
+        try input.execStatement(cmdz, .{
+            .msg = &msg,
+            .conn = &conn,
+            .gpa = gpa,
+            .io = io,
+            .pager = &page_exec
+        });
+
+        if (argp.vargs.get("interactive") == null) {
+            return;
+        }
+    }
+
+    if (argp.vargs.get("source")) |path| {
+        try input.sourceFile(path, .{
+            .msg = &msg,
+            .conn = &conn,
+            .gpa = gpa,
+            .io = io,
+            .pager = &page_exec
+        });
+
+        if (argp.vargs.get("interactive") == null) {
+            return;
+        }
+    }
+
     try startupMessage(&stderr.interface, .{
         .config = cfg,
         .pager = page_exec,
@@ -169,12 +200,10 @@ pub fn main(init: std.process.Init) !void {
             .canceled => {
                 prompt = @constCast("> \x00");
                 input.active_query.clear(gpa);
-                continue;
             },
             .continued => {
                 prompt = @constCast(". \x00");
                 try input.active_query.add(gpa, std.mem.span(query));
-                continue;
             },
             .dot => {
                 _ = input.addHistory(query);
@@ -187,46 +216,29 @@ pub fn main(init: std.process.Init) !void {
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
-
-                continue;
             },
             .execute => {
                 prompt = @constCast("> \x00");
                 try input.active_query.add(gpa, std.mem.span(query));
 
-                // Clear the prior result set, which was retained for .save and
-                // maybe other dotcommands
-                conn.last_result.clear(gpa);
+                const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
+                defer gpa.free(qstr);
+
+                _ = input.addHistory(qstr);
+                input.active_query.clear(gpa);
+
+                input.execStatement(qstr, .{
+                    .msg = &msg,
+                    .conn = &conn,
+                    .gpa = gpa,
+                    .io = io,
+                    .pager = &page_exec
+                }) catch {
+                    try msg.printLastErr(&stderr.interface);
+                };
             },
             .exit => break
         }
-
-        const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
-        defer gpa.free(qstr);
-
-        _ = input.addHistory(qstr);
-        input.active_query.clear(gpa);
-
-        const prntbuf = conn.execute(io, gpa, &msg, qstr) catch {
-            try msg.printLastErr(&stderr.interface);
-            continue;
-        };
-        defer gpa.free(prntbuf);
-
-        // FIXME: We should do this selectively. E.g. only update the
-        // catalog cache IF the statement type was something that would
-        // have changed the catalog, such as changing the current
-        // database or schema, or creating an object.
-        // Also how to make sure this gets cleaned up without slowing
-        // down the next prompt?
-        //_ = io.async(ConnectionCatalog.refresh, .{&input.catalog, gpa, &conn});
-        //defer ref_fut.cancel(io) catch {};
-
-        try pager.page(io, page_exec, prntbuf);
-
-        // Diagnostics
-        try stderr.interface.print("{f}\n", .{ conn.pmon });
-        try stderr.interface.flush();
     }
 }
 

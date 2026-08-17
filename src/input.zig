@@ -229,12 +229,16 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     };
 
-    const file = Dir.cwd().openFile(opts.io, fname, .{}) catch {
+    try sourceFile(fname, opts);
+}
+
+pub fn sourceFile(path: []const u8, opts: DotCommandOptions) !void {
+    const file = Dir.cwd().openFile(opts.io, path, .{}) catch {
         opts.msg.addErr(
             "Cannot access '{s}': No such file or directory",
-            .{ fname }
+            .{ path }
         );
-        return error.DotCommandError;
+        return error.SourceFileError;
     };
     defer file.close(opts.io);
 
@@ -245,6 +249,10 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
+    try execStatement(buffer, opts);
+}
+
+pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
     // Clear the prior result set
     opts.conn.last_result.clear(opts.gpa);
 
@@ -252,12 +260,12 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         opts.io,
         opts.gpa,
         opts.msg,
-        buffer
+        query
     ) catch {
-        return error.DotCommandError;
+        return error.ExecutionError;
     };
     defer opts.gpa.free(prntbuf);
-    
+
     try pager.page(opts.io, opts.pager.*, prntbuf);
 
     // Diagnostics

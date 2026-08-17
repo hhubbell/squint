@@ -89,10 +89,13 @@ fn isVersion(arg: []const u8) bool {
 pub fn help() void {
     // FIXME: Use io.Writer instead of std.debug but whatever
     std.debug.print("squint {f}\n\n"
-        ++ "Usage: squint [DRIVER] [ARGS]\n\n"
-        ++ "  --driver\tAny driver supported by adbc_driver_manager\n\n"
-        ++ "  --uri\t\tDatabase connection string parameters\n"
-        ++ "  --profile\tConnection profile config name\n",
+        ++ "Usage: squint [ARGS]\n\n"
+        ++ "  --profile\tConnection profile config name\n"
+        ++ "  --driver\tAny driver supported by adbc_driver_manager\n"
+        ++ "  --uri\t\tDatabase connection string parameters\n\n"
+        ++ "  --exec\tExecute a string as a query\n"
+        ++ "  --interactive\tEnter an interactive prompt after exec or source\n"
+        ++ "  --source\tRead and execute a file\n",
         .{version});
 }
 
