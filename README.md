@@ -57,14 +57,17 @@ but not natively. It is unlikely that Windows will be supported natively.
 ## Usage
 
 ```
-squint 0.0.0-dev.r7
+squint 0.0.0-dev.8
 
-Usage: squint [DRIVER] [ARGS]
+Usage: squint [ARGS]
 
-  driver	Any driver supported by adbc_driver_manager
-
-  --uri		Database connection string parameters
   --profile	Connection profile config name
+  --driver	Any driver supported by adbc_driver_manager
+  --uri		Database connection string parameters
+
+  --exec	Execute a string as a query
+  --interactive	Enter an interactive prompt after exec or source
+  --source	Read and execute a file
 ```
 
 ## Drivers
