@@ -57,7 +57,7 @@ but not natively. It is unlikely that Windows will be supported natively.
 ## Usage
 
 ```
-squint 0.0.0-dev.8
+squint 0.0.0-dev.9
 
 Usage: squint [ARGS]
 
