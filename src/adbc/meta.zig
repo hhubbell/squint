@@ -268,12 +268,13 @@ fn getHeader(
         var view: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
         try err.checkNanoArrow(c.ArrowSchemaViewInit(&view, col, &a_err));
 
-        var format: ColMetadata.TypeFormat = .empty;
-        if (isDecimal(&view)) {
-            format.decimal = DecimalFmt.fromSchemaView(&view);
-        } else if (isDatetime(&view)) {
-            format.time = try TimeFmt.fromSchemaView(&view);
-        }
+        const format: ColMetadata.TypeFormat = if (isDecimal(&view)) blk: {
+            break :blk .{ .decimal = DecimalFmt.fromSchemaView(&view) };
+        } else if (isDatetime(&view)) blk: {
+            break :blk .{ .time = try TimeFmt.fromSchemaView(&view) };
+        } else blk: {
+            break :blk .{ .empty = .{} };
+        };
 
         result[i] = .{
             .name = name,

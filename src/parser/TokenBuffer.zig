@@ -37,14 +37,16 @@ pub fn split(self: *Self, gpa: Allocator) ![]Self {
     // a comment or whitespace.
     for (start..cur) |i| {
         if (
-            !(self.items[i].isWhitespace()
-            or self.items[i].is(.BLOCK_COMMENT)
-            or self.items[i].is(.COMMENT))
+            !self.items[i].isWhitespace()
+            and !self.items[i].is(.BLOCK_COMMENT)
+            and !self.items[i].is(.COMMENT)
         ) { 
             try stmt.append(gpa, .{
                 .items = self.items[start..cur],
                 .src = self.src
             });
+
+            break;
         }
     }
 
