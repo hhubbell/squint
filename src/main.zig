@@ -133,10 +133,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = conn.deinit(gpa) catch {};
 
     if (argp.vargs.get("exec")) |cmd| {
-        const cmdz: [:0] const u8 = try gpa.dupeSentinel(u8, cmd, 0);
-        defer gpa.free(cmdz);
-
-        try input.execStatement(cmdz, .{
+        try input.execStatements(cmd, .{
             .msg = &msg,
             .conn = &conn,
             .gpa = gpa,
@@ -221,13 +218,13 @@ pub fn main(init: std.process.Init) !void {
                 prompt = @constCast("> \x00");
                 try input.active_query.add(gpa, std.mem.span(query));
 
-                const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
+                const qstr: []const u8 = try input.active_query.asString(gpa);
                 defer gpa.free(qstr);
 
-                _ = input.addHistory(qstr);
+                _ = input.addHistory(@ptrCast(qstr));
                 input.active_query.clear(gpa);
 
-                input.execStatement(qstr, .{
+                input.execStatements(qstr, .{
                     .msg = &msg,
                     .conn = &conn,
                     .gpa = gpa,

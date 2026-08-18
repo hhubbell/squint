@@ -131,6 +131,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize
     });
 
+    const parser = b.createModule(.{
+        .root_source_file = b.path("src/parser/root.zig"),
+        .target = target,
+        .optimize = optimize
+    });
+
     const adbc_wrap = b.createModule(.{
         .root_source_file = b.path("src/adbc/root.zig"),
         .target = target,
@@ -156,6 +162,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "c", .module = t.mod },
             .{ .name = "adbc", .module = adbc_wrap },
             .{ .name = "date", .module = date },
+            .{ .name = "parser", .module = parser },
             .{ .name = "build_options", .module = options.createModule() }
         },
     });

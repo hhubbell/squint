@@ -1,6 +1,7 @@
 const std = @import("std");
 const adbc = @import("adbc");
 const c = @import("c");
+const parser = @import("parser");
 
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
@@ -243,13 +244,13 @@ pub fn sourceFile(path: []const u8, opts: DotCommandOptions) !void {
     defer file.close(opts.io);
 
     const fsize = try file.length(opts.io);
-    const buffer: [:0]u8 = try opts.gpa.allocSentinel(u8, fsize, 0);
+    const buffer: []u8 = try opts.gpa.alloc(u8, fsize);
     defer opts.gpa.free(buffer);
 
     var reader: Io.File.Reader = file.reader(opts.io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    try execStatement(buffer, opts);
+    try execStatements(buffer, opts);
 }
 
 pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
@@ -275,6 +276,20 @@ pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
     try stderr.interface.flush();
 }
 
+pub fn execStatements(query: []const u8, opts: DotCommandOptions) !void {
+    var stmts: parser.TokenBuffer = try parser.FastScan.scan(opts.gpa, query);
+    defer stmts.deinit(opts.gpa);
+    
+    const stmt_lst: []parser.TokenBuffer = try stmts.split(opts.gpa);
+    defer opts.gpa.free(stmt_lst);
+
+    for (stmt_lst) |stmt| {
+        const qstr: [:0]const u8 = try stmt.asStringZ(opts.gpa);
+        defer opts.gpa.free(qstr);
+
+        try execStatement(qstr, opts);
+    }
+}
 
 const InputType = enum {
     blank, canceled, continued, dot, execute, exit
@@ -347,6 +362,10 @@ pub const InputQuery = struct {
         for (self.parts[0..self.head]) |p| gpa.free(p);
         self.head = 0;
         @memset(self.parts, "");
+    }
+
+    pub fn asString(self: *Self, gpa: Allocator) ![]const u8 {
+        return try std.mem.join(gpa, " ", self.parts[0..self.head]);
     }
 
     pub fn asStringZ(self: *Self, gpa: Allocator) ![:0]const u8 {
