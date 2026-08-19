@@ -524,13 +524,13 @@ fn isFixedWidth(col: *c.ArrowSchemaView) bool {
 fn fixedSlotWidth(col: *c.ArrowSchemaView) usize {
     return switch (col.type) {
             // YYYY-MM-DD
-            c.NANOARROW_TYPE_DATE32 => 10,
+            c.NANOARROW_TYPE_DATE32 => date.DateTime.DateStringWidth,
             // YYYY-MM-DD HH:MM:SS
             c.NANOARROW_TYPE_DATE64,
-            c.NANOARROW_TYPE_TIMESTAMP => 23,
+            c.NANOARROW_TYPE_TIMESTAMP => date.DateTime.DateTimeStringWidth,
             // HH:MM:SS.mmm
             c.NANOARROW_TYPE_TIME32,
-            c.NANOARROW_TYPE_TIME64 => 12,
+            c.NANOARROW_TYPE_TIME64 => date.Time.TimeStringWidth,
             // 0|1
             c.NANOARROW_TYPE_BOOL => 1,
         else => unreachable
@@ -569,17 +569,17 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         },
         c.NANOARROW_TYPE_DATE32 => {
             // YYYY-MM-DD
-            return 10;
+            return date.DateTime.DateStringWidth;
         },
         c.NANOARROW_TYPE_DATE64,
         c.NANOARROW_TYPE_TIMESTAMP => {
             // YYYY-MM-DD HH:MM:SS.mmm
-            return 23;
+            return date.DateTime.DateTimeStringWidth;
         },
         c.NANOARROW_TYPE_TIME32,
         c.NANOARROW_TYPE_TIME64 => {
             // HH:MM:SS.mmm
-            return 12;
+            return date.Time.TimeStringWidth;
         },
         c.NANOARROW_TYPE_INTERVAL_MONTHS,
         c.NANOARROW_TYPE_INTERVAL_DAY_TIME,
@@ -612,8 +612,17 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         c.NANOARROW_TYPE_FLOAT,
         c.NANOARROW_TYPE_DOUBLE => {
             const val: f128 = c.ArrowArrayViewGetDoubleUnsafe(col, row);
-            const str = try std.fmt.bufPrint(&buf, "{d:.4}", .{val});
-            return str.len;
+            if (val == 0) return 6;
+
+            const log = @log(@abs(val));
+            if (log < 0) return 6;
+
+            // +1 for log to n digits
+            // +1 for the decimal place
+            // +4 for default precision
+            const scl: u64 = @as(u64, @intFromFloat(log)) + 6;
+
+            return if (val > 0) scl else scl + 1;
         },
         c.NANOARROW_TYPE_BOOL => {
             return 1;
