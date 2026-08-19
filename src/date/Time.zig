@@ -3,6 +3,8 @@ const time = std.time;
 
 const Self = @This();
 
+pub const TimeStringWidth: u8 = 12;
+
 hour: u8,
 minute: u8,
 second: u8,
@@ -18,6 +20,21 @@ pub fn asTimeString(ts: Self, buf: []u8) ![]u8 {
             ts.second,
             ts.millisecond
         });
+}
+
+test "TimeStringWidth" {
+    var buf: [12]u8 = undefined;
+    const midnight: Self = .{
+        .hour=0,
+        .minute=0,
+        .second=0,
+        .millisecond=0
+    };
+
+    try std.testing.expectEqual(
+        TimeStringWidth,
+        (try midnight.asTimeString(&buf)).len
+    );
 }
 
 /// Convert an int representing the number of seconds since midnight to a

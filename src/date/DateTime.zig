@@ -6,6 +6,9 @@ const Time = @import("Time.zig");
 
 const Self = @This();
 
+pub const DateStringWidth: u8 = 10;
+pub const DateTimeStringWidth: u8 = 23;
+
 datepart: Date,
 timepart: Time,
 
@@ -42,6 +45,28 @@ test "asDateString" {
     );
 }
 
+test "DateStringWidth" {
+    var buf: [10]u8 = undefined;
+    const epoch: Self = .{
+        .datepart = .{
+            .year=1970,
+            .month=1,
+            .day=1
+        },
+        .timepart = .{
+            .hour=0,
+            .minute=0,
+            .second=0,
+            .millisecond=0
+        }
+    };
+
+    try std.testing.expectEqual(
+        DateStringWidth,
+        (try epoch.asDateString(&buf)).len
+    );
+}
+
 /// Given a buffer, print the DateTime in YYYY-MM-DD HH:MM:SS.mmm format.
 pub fn asDateTimeString(dt: Self, buf: []u8) ![]u8 {
     return std.fmt.bufPrint(buf,
@@ -75,6 +100,28 @@ test "asDateTimeString" {
     try std.testing.expectEqualStrings(
         "1970-01-01 12:13:14.987",
         try epoch.asDateTimeString(&buf)
+    );
+}
+
+test "DateTimeStringWidth" {
+    var buf: [23]u8 = undefined;
+    const epoch: Self = .{
+        .datepart = .{
+            .year=1970,
+            .month=1,
+            .day=1
+        },
+        .timepart = .{
+            .hour=12,
+            .minute=13,
+            .second=14,
+            .millisecond=987
+        }
+    };
+
+    try std.testing.expectEqual(
+        DateTimeStringWidth,
+        (try epoch.asDateTimeString(&buf)).len
     );
 }
 
