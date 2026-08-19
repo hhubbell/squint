@@ -210,26 +210,38 @@ fn produceBatchMaximums(
     buffer: *StreamBuffer
 ) !void {
     for (indexes) |i| {
+        var schema: c.ArrowSchemaView = std.mem.zeroInit(c.ArrowSchemaView, .{});
+        err.checkNanoArrow(c.ArrowSchemaViewInit(
+            &schema,
+            buffer.schema.children[i.header_i],
+            &buffer.err
+        )) catch {
+            std.debug.print("!!PRODUCER ERROR [schema]: {s}\n", .{buffer.err.message});
+            std.debug.print("Process likely deadlocked\n", .{});
+            return error.Canceled;
+        };
+
         var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
         err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
             &view,
             &buffer.schema,
             &buffer.err
         )) catch {
-            std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
+            std.debug.print("!!PRODUCER ERROR [view]: {s}\n", .{buffer.err.message});
+            std.debug.print("Process likely deadlocked\n", .{});
+            return error.Canceled;
+        };
+        err.checkNanoArrow(c.ArrowArrayViewSetArray(
+            &view,
+            &buffer.items[i.buffer_i],
+            &buffer.err
+        )) catch {
+            std.debug.print("!!PRODUCER ERROR [view]: {s}\n", .{buffer.err.message});
             std.debug.print("Process likely deadlocked\n", .{});
             return error.Canceled;
         };
 
-        var batch: c.ArrowArray = buffer.items[i.buffer_i];
-
-        err.checkNanoArrow(c.ArrowArrayViewSetArray(&view, &batch, &buffer.err)) catch {
-            std.debug.print("!!PRODUCER ERROR: {s}\n", .{buffer.err.message});
-            std.debug.print("Process likely deadlocked\n", .{});
-            return error.Canceled;
-        };
-
-        const col = view.children[i.header_i];
+        const col: *c.ArrowArrayView = view.children[i.header_i];
 
         var c_fmt: ColFmt = .{
             .width = 0,
@@ -237,13 +249,24 @@ fn produceBatchMaximums(
             .color_slots = 0,
             .col_i = i.header_i};
 
-        for (0..@intCast(col.*.length)) |k| {
-            const sw = slotWidth(&header[i.header_i], col, k) catch return error.Canceled;
-            const bw = byteWidth(&header[i.header_i], col, k) catch return error.Canceled;
+        if (isFixedWidth(&schema)) {
+            const w = fixedSlotWidth(&schema);
 
-            c_fmt.width = @max(c_fmt.width, sw);
-            c_fmt.bytes = @max(c_fmt.bytes, bw);
-            c_fmt.color_slots += @intFromBool(isNull(col, k));
+            c_fmt.width = w;
+            c_fmt.bytes = w;
+            
+            for (0..@intCast(col.*.length)) |k| {
+                c_fmt.color_slots += @intFromBool(isNull(col, k));
+            }
+        } else {
+            for (0..@intCast(col.*.length)) |k| {
+                const sw = slotWidth(&header[i.header_i], col, k) catch return error.Canceled;
+                const bw = byteWidth(&header[i.header_i], col, k) catch return error.Canceled;
+
+                c_fmt.width = @max(c_fmt.width, sw);
+                c_fmt.bytes = @max(c_fmt.bytes, bw);
+                c_fmt.color_slots += @intFromBool(isNull(col, k));
+            }
         }
 
         queue.putOne(io, c_fmt) catch {
@@ -308,7 +331,10 @@ pub fn extractValue(
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
-        c.NANOARROW_TYPE_INT64,
+        c.NANOARROW_TYPE_INT64 => {
+            const val = c.ArrowArrayViewGetIntUnsafe(view, row);
+            return std.fmt.bufPrint(buf, "{d}", .{val}) catch "<err>";
+        },
         c.NANOARROW_TYPE_UINT8,
         c.NANOARROW_TYPE_UINT16,
         c.NANOARROW_TYPE_UINT32,
@@ -483,6 +509,34 @@ fn isDecimal(col: *c.ArrowSchemaView) bool {
     };
 }
 
+fn isFixedWidth(col: *c.ArrowSchemaView) bool {
+    return switch (col.type) {
+            c.NANOARROW_TYPE_DATE32,
+            c.NANOARROW_TYPE_DATE64,
+            c.NANOARROW_TYPE_TIMESTAMP,
+            c.NANOARROW_TYPE_TIME32,
+            c.NANOARROW_TYPE_TIME64,
+            c.NANOARROW_TYPE_BOOL => true,
+        else => false
+    };
+}
+
+fn fixedSlotWidth(col: *c.ArrowSchemaView) usize {
+    return switch (col.type) {
+            // YYYY-MM-DD
+            c.NANOARROW_TYPE_DATE32 => 10,
+            // YYYY-MM-DD HH:MM:SS
+            c.NANOARROW_TYPE_DATE64,
+            c.NANOARROW_TYPE_TIMESTAMP => 23,
+            // HH:MM:SS.mmm
+            c.NANOARROW_TYPE_TIME32,
+            c.NANOARROW_TYPE_TIME64 => 12,
+            // 0|1
+            c.NANOARROW_TYPE_BOOL => 1,
+        else => unreachable
+    };
+}
+
 /// FIXME Cannot handle all data types
 fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
     const row: i64 = @intCast(idx);
@@ -497,14 +551,21 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
         c.NANOARROW_TYPE_INT8,
         c.NANOARROW_TYPE_INT16,
         c.NANOARROW_TYPE_INT32,
-        c.NANOARROW_TYPE_INT64,
+        c.NANOARROW_TYPE_INT64 => {
+            const val = c.ArrowArrayViewGetIntUnsafe(col, row);
+            if (val == 0) return 1;
+
+            const scl: u64 = std.math.log10_int(@as(u64, @abs(val))) + 1;
+            return if (val > 0) scl else scl + 1;
+        },
         c.NANOARROW_TYPE_UINT8,
         c.NANOARROW_TYPE_UINT16,
         c.NANOARROW_TYPE_UINT32,
         c.NANOARROW_TYPE_UINT64 => {
-            const val: u64 = c.ArrowArrayViewGetUIntUnsafe(col, row);
-            const str = try std.fmt.bufPrint(&buf, "{d}", .{val});
-            return str.len;
+            const val = c.ArrowArrayViewGetUIntUnsafe(col, row);
+            if (val == 0) return 1;
+
+            return std.math.log10_int(val) + 1;
         },
         c.NANOARROW_TYPE_DATE32 => {
             // YYYY-MM-DD
@@ -555,9 +616,7 @@ fn slotWidth(meta: *ColMetadata, col: *c.ArrowArrayView, idx: u64) !usize {
             return str.len;
         },
         c.NANOARROW_TYPE_BOOL => {
-            const val: i64 = c.ArrowArrayViewGetIntUnsafe(col, row);
-            const str = try std.fmt.bufPrint(&buf, "{d}", .{val});
-            return str.len;
+            return 1;
         },
         c.NANOARROW_TYPE_STRING,
         c.NANOARROW_TYPE_LARGE_STRING => {

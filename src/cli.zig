@@ -95,6 +95,7 @@ pub fn help() void {
         ++ "  --uri\t\tDatabase connection string parameters\n\n"
         ++ "  --exec\tExecute a string as a query\n"
         ++ "  --interactive\tEnter an interactive prompt after exec or source\n"
+        ++ "  --pager\t[on|off] Disable paging. Default on.\n"
         ++ "  --source\tRead and execute a file\n",
         .{version});
 }

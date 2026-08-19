@@ -15,6 +15,7 @@ const ConnectionIo = @import("ConnectionIo.zig");
 const Color = @import("render/Color.zig");
 
 const Allocator = std.mem.Allocator;
+const Environ = std.process.Environ;
 const Io = std.Io;
 const posix = std.posix;
 
@@ -92,6 +93,18 @@ fn windowSize(handle: Io.File.Handle, msg: *mesg.MessageBuffer) posix.winsize {
     return winsize;
 }
 
+fn selectPager(io: Io, arg: ?[]const u8, env: *Environ.Map) pager.PagerType {
+    if (arg == null) {
+        return pager.whichPager(io, env);
+    }
+
+    if (std.mem.eql(u8, arg.?, "off")) {
+        return .nopager;
+    }
+
+    return pager.whichPager(io, env);
+}
+
 /// REPL loop
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -124,7 +137,9 @@ pub fn main(init: std.process.Init) !void {
     //  the output. But this is not currently something we do anything with.
     const winsize = windowSize(Io.File.stdout().handle, &msg);
 
-    var page_exec = pager.whichPager(io, init.environ_map);
+    var page_exec: pager.PagerType = selectPager(io,
+        argp.vargs.get("pager"),
+        init.environ_map);
 
     var conn: ConnectionIo = try .init(io, gpa);
     conn.connect(gpa, cfg) catch {
