@@ -98,11 +98,7 @@ fn selectPager(io: Io, arg: ?[]const u8, env: *Environ.Map) pager.PagerType {
         return pager.whichPager(io, env);
     }
 
-    if (std.mem.eql(u8, arg.?, "off")) {
-        return .nopager;
-    }
-
-    return pager.whichPager(io, env);
+    return pager.fromString(arg.?) catch pager.whichPager(io, env);
 }
 
 /// REPL loop

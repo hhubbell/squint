@@ -187,15 +187,11 @@ fn dcPager(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     }
 
-    const typ: ?pager.PagerType = std.meta.stringToEnum(pager.PagerType, page.?);
-
-    if (typ == null) {
+    opts.pager.* = pager.fromString(page.?) catch {
         opts.msg.addErr("{s} is not a supported pager. "
             ++ "Call .pager [less|more|nopager]", .{page.?});
         return error.DotCommandError;
-    }
-
-    opts.pager.* = typ.?;
+    };
 }
 
 fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {

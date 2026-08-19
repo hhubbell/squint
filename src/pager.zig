@@ -53,6 +53,17 @@ pub fn whichPager(io: Io, env: *Environ.Map) PagerType {
     return .nopager;
 }
 
+/// Return a PagerType from a string
+pub fn fromString(value: []const u8) !PagerType {
+    const typ: ?PagerType = std.meta.stringToEnum(PagerType, value);
+
+    if (typ == null) {
+        return error.InvalidPager;
+    }
+
+    return typ.?;
+}
+
 /// Take an input buffer and write it to the session pager.
 pub fn page(io: Io, pager: PagerType, data: []const u8) !void {
     switch(pager) {
