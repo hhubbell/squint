@@ -3,6 +3,7 @@ const adbc = @import("adbc");
 const c = @import("c");
 const parser = @import("parser");
 
+const editor = @import("editor.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
 
@@ -35,7 +36,8 @@ pub const DotCommandOptions = struct {
     conn: *ConnectionIo,
     gpa: Allocator,
     io: Io,
-    pager: *pager.PagerType
+    pager: *pager.PagerType,
+    editor: ?[]const u8
 };
 
 const DotCommand = struct {
@@ -50,6 +52,9 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
     .{ ".errors", DotCommand {
         .help = "Print logged error messages",
         .call = dcErrors }},
+    .{ ".edit", DotCommand {
+        .help = "Edit the last statement using env EDITOR",
+        .call = dcEdit }},
     .{ ".exit", DotCommand {
         .help = "Exit the program",
         .call = dcExit }},
@@ -115,6 +120,35 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
         }
         try writer.interface.flush();
     }
+}
+
+fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
+    _ = args;
+
+    if (opts.editor == null) {
+        opts.msg.addErr("Editor not available", .{});  
+        return error.DotCommandError;
+    }
+
+    var file: Io.File = Dir.createFileAbsolute(opts.io, editor.tmp_buffer, .{}) catch |e| {
+        opts.msg.addErr("File IO error: {s}", .{@errorName(e)});  
+        return error.DotCommandError;
+    };
+    defer file.close(opts.io);
+
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.File.Writer = file.writer(opts.io, &buffer);
+
+    writer.interface.writeAll(opts.conn.last_statement orelse "") catch |e| {
+        opts.msg.addErr("Could not write last statement {s}", .{@errorName(e)});
+        return error.DotCommandError;
+    };
+
+    try writer.interface.flush();
+
+    try editor.edit(opts.io, opts.editor.?, editor.tmp_buffer);
+
+    try sourceFile(editor.tmp_buffer, opts);
 }
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -198,7 +232,6 @@ fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     var file: Io.File = undefined; 
     if (args.next()) |fname| {
         file = Dir.cwd().createFile(opts.io, fname, .{}) catch |e| {
-            //FIXME: add `e` when we support this in addErr
             opts.msg.addErr("File IO error: {s}", .{@errorName(e)});  
             return error.DotCommandError;
         };
@@ -251,7 +284,7 @@ pub fn sourceFile(path: []const u8, opts: DotCommandOptions) !void {
 
 pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
     // Clear the prior result set
-    opts.conn.last_result.clear(opts.gpa);
+    opts.conn.clear(opts.gpa);
 
     const prntbuf = opts.conn.execute(
         opts.io,
@@ -361,11 +394,11 @@ pub const InputQuery = struct {
     }
 
     pub fn asString(self: *Self, gpa: Allocator) ![]const u8 {
-        return try std.mem.join(gpa, " ", self.parts[0..self.head]);
+        return try std.mem.join(gpa, "\n", self.parts[0..self.head]);
     }
 
     pub fn asStringZ(self: *Self, gpa: Allocator) ![:0]const u8 {
-        return try std.mem.joinZ(gpa, " ", self.parts[0..self.head]);
+        return try std.mem.joinZ(gpa, "\n", self.parts[0..self.head]);
     }
 
     pub fn isEmpty(self: *Self) bool {

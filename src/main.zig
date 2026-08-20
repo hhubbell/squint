@@ -3,6 +3,7 @@ const adbc = @import("adbc");
 const c = @import("c");
 
 const cli = @import("cli.zig");
+const editor = @import("editor.zig");
 const input = @import("input.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
@@ -22,6 +23,7 @@ const posix = std.posix;
 const StartupParams = struct {
     config: ?adbc.AdbcConfig,
     pager: ?pager.PagerType,
+    editor: ?[]const u8,
     winsize: ?posix.winsize,
     mesg: ?*mesg.MessageBuffer
 };
@@ -49,6 +51,13 @@ fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
 
     if (parms.pager) |x| {
         try writer.print("Pager \"{s}\"\n", .{@tagName(x)});
+    }
+
+    try writer.print("Editor ", .{});
+    if (parms.editor) |x| {
+        try writer.print("\"{s}\"\n", .{x});
+    } else {
+        try writer.print("unavailable\n", .{});
     }
 
     // TODO URI string or connection params?
@@ -133,6 +142,8 @@ pub fn main(init: std.process.Init) !void {
     //  the output. But this is not currently something we do anything with.
     const winsize = windowSize(Io.File.stdout().handle, &msg);
 
+    const edit_exec: ?[]const u8 = editor.whichEditor(io, init.environ_map);
+
     var page_exec: pager.PagerType = selectPager(io,
         argp.vargs.get("pager"),
         init.environ_map);
@@ -149,7 +160,8 @@ pub fn main(init: std.process.Init) !void {
             .conn = &conn,
             .gpa = gpa,
             .io = io,
-            .pager = &page_exec
+            .pager = &page_exec,
+            .editor = edit_exec
         });
 
         if (argp.vargs.get("interactive") == null) {
@@ -163,7 +175,8 @@ pub fn main(init: std.process.Init) !void {
             .conn = &conn,
             .gpa = gpa,
             .io = io,
-            .pager = &page_exec
+            .pager = &page_exec,
+            .editor = edit_exec
         });
 
         if (argp.vargs.get("interactive") == null) {
@@ -174,6 +187,7 @@ pub fn main(init: std.process.Init) !void {
     try startupMessage(&stderr.interface, .{
         .config = cfg,
         .pager = page_exec,
+        .editor = edit_exec,
         .winsize = winsize,
         .mesg = &msg
     });
@@ -220,7 +234,8 @@ pub fn main(init: std.process.Init) !void {
                     .conn = &conn,
                     .gpa = gpa,
                     .io = io,
-                    .pager = &page_exec
+                    .pager = &page_exec,
+                    .editor = edit_exec
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
@@ -240,7 +255,8 @@ pub fn main(init: std.process.Init) !void {
                     .conn = &conn,
                     .gpa = gpa,
                     .io = io,
-                    .pager = &page_exec
+                    .pager = &page_exec,
+                    .editor = edit_exec
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };

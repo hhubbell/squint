@@ -18,6 +18,7 @@ err: c.AdbcError,
 pmon: perf.PerfData,
 row_limit: ?usize = 10_240,
 rows_affected: i64 = 0,
+last_statement: ?[]const u8 = null,
 last_result: adbc.TableBuffer,
 
 pub fn init(io: Io, gpa: Allocator) !Self {
@@ -34,9 +35,17 @@ pub fn init(io: Io, gpa: Allocator) !Self {
 
 pub fn deinit(self: *Self, gpa: Allocator) !void {
     self.last_result.deinit(gpa);
+    if (self.last_statement) |stmt| gpa.free(stmt);
     if (self.err.release) |release| release(&self.err);
     try adbc.err.checkAdbc(c.AdbcConnectionRelease(&self.conn, &self.err));
     try adbc.err.checkAdbc(c.AdbcDatabaseRelease(&self.db, &self.err));
+}
+
+pub fn clear(self: *Self, gpa: Allocator) void {
+    self.last_result.clear(gpa);
+
+    if (self.last_statement) |stmt| gpa.free(stmt);
+    self.last_statement = null;
 }
 
 /// Initialize a connection to database
@@ -75,6 +84,10 @@ pub fn execute(
     msg: *mesg.MessageBuffer,
     query_str: [:0]const u8
 ) ![]const u8 {
+    // Store the last statement. This should happen even if the query is
+    // invalid
+    self.last_statement = try gpa.dupe(u8, query_str[0..query_str.len - 1]);
+
     // Basic performance monitoring
     self.pmon.reset(io);
 

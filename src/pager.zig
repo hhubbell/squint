@@ -37,7 +37,7 @@ pub fn whichPager(io: Io, env: *Environ.Map) PagerType {
             const handle = dir.openFile(io, @tagName(typ), .{}) catch continue;
             defer handle.close(io);
 
-            const st = std.Io.File.stat(handle, io) catch continue;
+            const st = Io.File.stat(handle, io) catch continue;
 
             if (st.kind == .file) {
                 // When paging results, we need to disable SIGPIPE if we quit
