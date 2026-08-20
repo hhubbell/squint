@@ -65,17 +65,17 @@ pub fn fromString(value: []const u8) !PagerType {
 }
 
 /// Take an input buffer and write it to the session pager.
-pub fn page(io: Io, pager: PagerType, data: []const u8) !void {
+pub fn page(io: Io, pager: PagerType, source: *Io.Reader) !void {
     switch(pager) {
-        .less => try lessPipe(io, data),
-        .more => try morePipe(io, data),
-        .nopager => try writeStdout(io, data)
+        .less => try lessPipe(io, source),
+        .more => try morePipe(io, source),
+        .nopager => try writeStdout(io, source)
     }
 }
 
 /// Provide a pager child process for outputs that are larger than the standard
 /// output window. Requires dependency `less`.
-fn lessPipe(io: Io, data: []const u8) !void {
+fn lessPipe(io: Io, data: *Io.Reader) !void {
     var child = try std.process.spawn(io, .{
         .argv = &[2][]const u8 {"less", "-FRS"},
         .stdin = .pipe,
@@ -87,7 +87,7 @@ fn lessPipe(io: Io, data: []const u8) !void {
 
 /// Provide a pager child process for outputs using `more`. Requires dependency
 /// `more`.
-fn morePipe(io: Io, data: []const u8) !void {
+fn morePipe(io: Io, data: *Io.Reader) !void {
     var child = try std.process.spawn(io, .{
         .argv = &[1][]const u8 {"more"},
         .stdin = .pipe,
@@ -97,11 +97,11 @@ fn morePipe(io: Io, data: []const u8) !void {
     try writeChild(io, &child, data);
 }
 
-/// Wite output unbuffered to a child process pipe. In the event the pipe
+/// Write output unbuffered to a child process pipe. In the event the pipe
 /// closes, clean up and return, making the WriteFailed error
-fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
+fn writeChild(io: Io, child: *std.process.Child, source: *Io.Reader) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = child.stdin.?.writer(io, &buffer);
+    var sink: Io.File.Writer = child.stdin.?.writer(io, &buffer);
 
     // WARNING: 
     //  When we close our pager without reading the full result set, less
@@ -109,7 +109,7 @@ fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
     //  We are ignoring these signals. As a result, incomplete reading of
     //  inputs results in a WriteFailed error due to a broken pipe. In this
     //  case, we are just ignoring the error and returning.
-    writer.interface.writeAll(data) catch |err| {
+    _ = source.streamRemaining(&sink.interface) catch |err| {
         if (err == error.WriteFailed) {
             child.stdin.?.close(io);
             child.stdin = null;
@@ -120,7 +120,7 @@ fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
 
         return err;
     };
-    writer.interface.flush() catch |err| {
+    sink.interface.flush() catch |err| {
         if (err == error.WriteFailed) {
             child.stdin.?.close(io);
             child.stdin = null;
@@ -146,12 +146,12 @@ fn writeChild(io: Io, child: *std.process.Child, data: []const u8) !void {
 
 /// In the event that no pager was available, write the output unbuffered
 /// to stdout.
-fn writeStdout(io: Io, data: []const u8) !void {
+fn writeStdout(io: Io, source: *Io.Reader) !void {
     var buffer: [4096]u8 = undefined;
-    var writer: Io.File.Writer = Io.File.stdout().writer(io, &buffer);
+    var sink: Io.File.Writer = Io.File.stdout().writer(io, &buffer);
 
-    try writer.interface.writeAll(data);
-    try writer.interface.flush();
+    _ = try source.streamRemaining(&sink.interface);
+    try sink.interface.flush();
 }
 
 

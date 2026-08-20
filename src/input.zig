@@ -296,7 +296,9 @@ pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
     };
     defer opts.gpa.free(prntbuf);
 
-    try pager.page(opts.io, opts.pager.*, prntbuf);
+    var source: Io.Reader = .fixed(prntbuf);
+
+    try pager.page(opts.io, opts.pager.*, &source);
 
     // Diagnostics
     var outbuf: [4096]u8 = undefined;
