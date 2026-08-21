@@ -13,7 +13,7 @@ const ConnectionIo = @import("ConnectionIo.zig");
 const Color = @import("render/Color.zig");
 const CsvWriter = @import("render/CsvWriter.zig");
 const State = @import("State.zig");
-const TableWriter = @import("render/TableWriter.zig");
+const TableWriter = @import("render/StreamingTableWriter.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -355,17 +355,38 @@ pub fn execStatement(
     // Clear the prior result set
     state.conn.clear(gpa);
 
-    const prntbuf = state.conn.execute(io, gpa, msg, query) catch {
+    state.conn.execute(io, gpa, msg, query) catch {
         return error.ExecutionError;
     };
-    defer gpa.free(prntbuf);
 
-    var source: Io.Reader = .fixed(prntbuf);
+    const maxcol = TableWriter.calcMaxWidth(state.conn.last_result.metadata.?);
+    const colbuf: []u8 = try gpa.alloc(u8, maxcol);
+    defer gpa.free(colbuf);
 
-    try pager.page(io, state.page, &source);
+    var outbuf: [4096]u8 = undefined;
+
+    var sink: pager.Pager = try pager.page(io, state.page, &outbuf);
+
+    // WARNING: 
+    //  When we close our pager without reading the full result set, less
+    //  will attempt to issue a SIGPIPE which terminates the parent process.
+    //  We are ignoring these signals. As a result, incomplete reading of
+    //  inputs results in a WriteFailed error due to a broken pipe. In this
+    //  case, we are just ignoring the error and returning.
+    TableWriter.write(
+        &sink.writer.interface,
+        &state.conn.last_result,
+        colbuf
+    ) catch |err| {
+        if (err != error.WriteFailed) {
+            return err;
+        }
+    };
+
+    try sink.writer.interface.flush();
+    try sink.close(io);
 
     // Diagnostics
-    var outbuf: [4096]u8 = undefined;
     var stderr: Io.File.Writer = Io.File.stderr().writer(io, &outbuf);
     try stderr.interface.print("{f}\n", .{ state.conn.pmon });
     try stderr.interface.flush();

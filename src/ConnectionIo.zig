@@ -83,7 +83,7 @@ pub fn execute(
     gpa: Allocator,
     msg: *mesg.MessageBuffer,
     query_str: [:0]const u8
-) ![]const u8 {
+) !void {
     // Store the last statement. This should happen even if the query is
     // invalid
     self.last_statement = try gpa.dupe(u8, query_str[0..query_str.len - 1]);
@@ -130,29 +130,49 @@ pub fn execute(
         return e;
     };
 
+
+    // -----
+    //
+    // 
+
+    //const bufsz = TableWriter.calcMaxWidth(self.last_result.metadata.?);
+    //var colbuf = try gpa.alloc(u8, bufsz);
+
+    //self.pmon.proc = self.pmon.lap(io);
+
+    //var writer = io.
+    //try TableWriter.write(&prntbuf, &self.last_result);
+
+    //self.pmon.rend = self.pmon.lap(io);
+
+    //return prntbuf;
+    //
+    // -----
+
+
     self.pmon.load = self.pmon.lap(io);
 
     // TODO move this to a new TableStreamBuffer interface
     self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result.buffer);
     self.pmon.rows = self.last_result.countRows();
 
-    const bufsz = TableWriter.calcResultBufSize(
-        self.last_result.metadata.?,
-        self.pmon.rows);
+//    const bufsz = TableWriter.calcResultBufSize(
+//        self.last_result.metadata.?,
+//        self.pmon.rows);
 
     self.pmon.proc = self.pmon.lap(io);
 
-    var prntbuf = try gpa.alloc(u8, bufsz);
+//    var prntbuf = try gpa.alloc(u8, bufsz);
 
     // Write the ArrowStream result set to the allocated print buffer. By
     // calculating the required buffer size ahead of time, instead of
     // dynamically allocating to build the string at print time, we save
     // a substantial amount of time rendering.
-    try TableWriter.write(&prntbuf, &self.last_result);
+//    try TableWriter.write(&prntbuf, &self.last_result);
 
-    self.pmon.rend = self.pmon.lap(io);
+//    self.pmon.rend = self.pmon.lap(io);
 
-    return prntbuf;
+//    return prntbuf;
 }
 
 /// If an error already exists, free it before returning a fresh AdbcError.
