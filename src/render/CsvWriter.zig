@@ -23,7 +23,7 @@ pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.TableBuffer) !void {
     for (asb.metadata.?, 0..) |col, i| {
         _ = try w.write(col.name);
 
-        if (i < asb.metadata.?.len - 1) _ = try w.write(",");
+        if (i < asb.countCols() - 1) _ = try w.write(",");
 
         maxw = @max(maxw, col.data.width);
     }
@@ -33,24 +33,20 @@ pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.TableBuffer) !void {
     const backing = try gpa.alloc(u8, maxw);
     defer gpa.free(backing);
 
-    for (0..asb.countBatches()) |i| {
-        var view = try asb.asArrayView(i);
-        defer _ = c.ArrowArrayViewReset(&view);
+    var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
+    defer iter.deinit();
 
-        for (0..asb.countBatchRows(i)) |r_i| {
-            for (0..@intCast(view.n_children)) |c_i| {
-                const col = view.children[c_i];
+    while (iter.next()) |slot| {
+        _ = try w.write(adbc.meta.extractValue(
+            slot.meta,
+            backing,
+            slot.view,
+            slot.row
+        ));
 
-                if (!adbc.meta.isNull(col, r_i)) {
-                    const val_str = adbc.meta.extractValue(
-                        &asb.metadata.?[c_i],
-                        backing,
-                        col,
-                        r_i);
-                    _ = try w.write(val_str);
-                }
-                if (c_i < view.n_children - 1) _ = try w.write(",");
-            }
+        if (slot.col < iter.table.countCols() - 1) {
+            _ = try w.write(",");
+        } else {
             _ = try w.write("\n");
         }
     }

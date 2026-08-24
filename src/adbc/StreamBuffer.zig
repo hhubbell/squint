@@ -11,6 +11,7 @@ const Self = @This();
 
 schema: c.ArrowSchema,
 items: []c.ArrowArray,
+view: c.ArrowArrayView,
 err: c.ArrowError,
 filled: u64,
 growth: usize = 16,
@@ -24,6 +25,7 @@ pub fn init(gpa: Allocator, capacity: u64) !Self {
     return .{
         .schema = std.mem.zeroInit(c.ArrowSchema, .{}),
         .items = try gpa.alloc(c.ArrowArray, capacity),
+        .view = std.mem.zeroInit(c.ArrowArrayView, .{}),
         .err = std.mem.zeroInit(c.ArrowError, .{}),
         .filled = 0};
 }
@@ -87,26 +89,32 @@ pub fn resize(self: *Self, gpa: Allocator) !void {
     self.items = try gpa.realloc(self.items, bufsize);
 }
 
+/// Set the backing ArrowArray schema and initialize an ArrowArray view, which
+/// can be reused as needed to access the buffer's batches.
+pub fn setSchema(
+    self: *Self,
+    stream: *c.ArrowArrayStream,
+    callable: *const fn (st: *c.ArrowArrayStream, sc: *c.ArrowSchema) callconv(.c) c_int
+) !void {
+    try errs.checkNanoArrowStream(callable(stream, &self.schema));
+    try errs.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
+        &self.view,
+        &self.schema,
+        &self.err));
+}
+
 /// Return a StreamBuffer record as an ArrowArrayView
 pub fn asArrayView(self: *Self, buffer_i: usize) !c.ArrowArrayView {
     if (buffer_i >= self.filled) {
         return error.IndexOutOfBounds;
     }
 
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    // TODO: Should this be initialized once initially, and then used
-    // by this function to generate a view as-needed? 
-    // Need to evaluate how expensive this Init call is.
-    try errs.checkNanoArrow(c.ArrowArrayViewInitFromSchema(
-        &view,
-        &self.schema,
-        &self.err));
     try errs.checkNanoArrow(c.ArrowArrayViewSetArray(
-        &view,
+        &self.view,
         &self.items[buffer_i],
         &self.err));
 
-    return view;
+    return self.view;
 }
 
 /// In some very specific cases, a StreamBuffer represents just one single

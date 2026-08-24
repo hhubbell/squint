@@ -153,21 +153,19 @@ pub fn padRightJustValue(buffer: *[]u8, value: []const u8) usize {
 pub fn printHeader(buffer: *[]u8, header: []adbc.ColMetadata) usize {
     const box_w = calcRowBoxSize(header);
 
-    var fmtbuf = buffer.*;
-
     var idx: usize = 0;
-    idx = printHorizSep(@constCast(&fmtbuf[idx..idx + box_w]), header, .Top);
-    idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
+    idx = printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Top);
+    idx += writeBuffer(buffer, Box.VertSep, idx);
 
     for (header) |col| {
-        var colbuf: []u8 = fmtbuf[idx..idx + col.data.width + PAD];
+        var colbuf: []u8 = buffer.*[idx..idx + col.data.width + PAD];
         idx += padCenterValue(&colbuf, col.name);
-        idx += writeBuffer(&fmtbuf, Box.VertSep, idx);
+        idx += writeBuffer(buffer, Box.VertSep, idx);
     }
 
-    idx += writeBuffer(&fmtbuf, "\n", idx);
+    idx += writeBuffer(buffer, "\n", idx);
 
-    idx += printHorizSep(@constCast(&fmtbuf[idx..idx + box_w]), header, .Middle);
+    idx += printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Middle);
 
     return idx;
 }
@@ -225,52 +223,45 @@ pub fn write(buffer: *[]u8, asb: *adbc.TableBuffer) !void {
 
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
-    for (0..asb.countBatches()) |i| {
-        var view = try asb.asArrayView(i);
-        defer _ = c.ArrowArrayViewReset(&view);
+    var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
+    defer iter.deinit();
 
-        for (0..asb.countBatchRows(i)) |r_i| {
-            var rowbuf = buffer.*[idx..];
-            var rb_idx: usize = 0;
+    while (iter.next()) |slot| {
+        idx += writeBuffer(buffer, Box.VertSep, idx);
 
-            // Left side of table border
-            rb_idx += writeBuffer(&rowbuf, Box.VertSep, rb_idx);
+        var byte_w = asb.metadata.?[slot.col].data.bytes + PAD;
 
-            for (0..@intCast(view.n_children)) |c_i| {
-                const col = view.children[c_i];
+        if (adbc.meta.isNull(slot.view, slot.row)) {
+            byte_w += Color.Grey.len + Color.Reset.len;
 
-                var byte_w = asb.metadata.?[c_i].data.bytes + PAD;
-                var cb_idx: usize = 0;
+            idx += padCenterValue(
+                @constCast(&buffer.*[idx..idx + byte_w]),
+                Color.Grey ++ "null" ++ Color.Reset);
+        } else {
+            const val_str = adbc.meta.extractValue(
+                slot.meta,
+                buffer.*[idx..idx + byte_w],
+                slot.view,
+                slot.row);
 
-                if (adbc.meta.isNull(col, r_i)) {
-                    // We need a slightly larger buffer for printing values with
-                    // color highlighting
-                    byte_w += Color.Grey.len + Color.Reset.len;
-
-                    var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
-                    cb_idx += padCenterValue(&colbuf, Color.Grey ++ "null" ++ Color.Reset);
-                } else {
-                    var colbuf = rowbuf[rb_idx..rb_idx + byte_w];
-                    const val_str = adbc.meta.extractValue(&asb.metadata.?[c_i], colbuf, col, r_i);
-                    if (adbc.meta.isNumeric(col)) {
-                        cb_idx += padRightJustValue(&colbuf, val_str);
-                    } else {
-                        cb_idx += padLeftJustValue(&colbuf, val_str);
-                    }
-                }
-
-                rb_idx += cb_idx;
-                rb_idx += writeBuffer(&rowbuf, Box.VertSep, rb_idx);
+            if (adbc.meta.isNumeric(slot.view)) {
+                idx += padRightJustValue(
+                    @constCast(&buffer.*[idx..idx + byte_w]),
+                    val_str);
+            } else {
+                idx += padLeftJustValue(
+                    @constCast(&buffer.*[idx..idx + byte_w]),
+                    val_str);
             }
+        }
 
-            rb_idx += writeBuffer(&rowbuf, "\n", rb_idx);
-
-            idx += rb_idx;
+        if (slot.col >= iter.table.countCols() - 1) {
+            idx += writeBuffer(buffer, Box.VertSep, idx);
+            idx += writeBuffer(buffer, "\n", idx);
         }
     }
 
     idx += printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), asb.metadata.?, .Bottom);
-
 }
 
 

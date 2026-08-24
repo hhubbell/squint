@@ -223,7 +223,7 @@ pub fn readStream(
     const getSchema = stream.get_schema orelse return error.AdbcLibError;
     const getNext = stream.get_next orelse return error.AdbcLibError;
 
-    try err.checkNanoArrowStream(getSchema(stream, &buffer.schema));
+    try buffer.setSchema(stream, getSchema);
 
     var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
     while (getNext(stream, &batch) == 0) {
