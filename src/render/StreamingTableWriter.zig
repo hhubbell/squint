@@ -146,35 +146,34 @@ pub fn writeHorizSep(writer: *Io.Writer, header: []adbc.ColMetadata, orientation
 pub fn write(writer: *Io.Writer, asb: *adbc.TableBuffer, colb: []u8) !void {
     try writeHeader(writer, asb.metadata.?);
 
-    for (0..asb.countBatches()) |i| {
-        var view = try asb.asArrayView(i);
-        defer _ = c.ArrowArrayViewReset(&view);
+    var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
+    defer iter.deinit();
 
-        for (0..asb.countBatchRows(i)) |r_i| {
-            // Left side of table border
-            try writer.writeAll(Box.VertSep);
+    while (iter.next()) |slot| {
+        // Left side of table border
+        try writer.writeAll(Box.VertSep);
 
-            for (asb.metadata.?, 0..) |meta, c_i| {
-                const col = view.children[c_i];
+        if (adbc.meta.isNull(slot.view, slot.row)) {
+            try padCenterValue(writer,
+                Color.Grey ++ "null" ++ Color.Reset,
+                slot.meta.data.width + PAD + Color.Grey.len + Color.Reset.len
+            );
+        } else {
+            const val_str = adbc.meta.extractValue(
+                slot.meta,
+                colb,
+                slot.view,
+                slot.row);
 
-                if (adbc.meta.isNull(col, r_i)) {
-                    try padCenterValue(writer,
-                        Color.Grey ++ "null" ++ Color.Reset,
-                        meta.data.width + PAD + Color.Grey.len + Color.Reset.len
-                    );
-                } else {
-                    const val_str = adbc.meta.extractValue(&asb.metadata.?[c_i], colb, col, r_i);
-
-                    if (adbc.meta.isNumeric(col)) {
-                        try padRightJustValue(writer, val_str, meta.data.width + PAD);
-                    } else {
-                        try padLeftJustValue(writer, val_str, meta.data.width + PAD);
-                    }
-                }
-
-                try writer.writeAll(Box.VertSep);
+            if (adbc.meta.isNumeric(slot.view)) {
+                try padRightJustValue(writer, val_str, slot.meta.data.width + PAD);
+            } else {
+                try padLeftJustValue(writer, val_str, slot.meta.data.width + PAD);
             }
+        }
 
+        if (slot.col >= iter.table.countCols() - 1) {
+            try writer.writeAll(Box.VertSep);
             try writer.writeAll("\n");
         }
     }
