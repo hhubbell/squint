@@ -52,10 +52,6 @@ pub const Iterator = struct {
         };
     }
 
-    pub fn deinit(self: *@This()) void {
-        _ = c.ArrowArrayViewReset(&self.view);
-    }
-
     pub fn next(self: *@This()) ?Slot {
         switch (self.adv) {
             .colwise => self.nextColWise() catch return null,

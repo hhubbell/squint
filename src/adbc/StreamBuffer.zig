@@ -62,6 +62,8 @@ pub fn clear(self: *Self) void {
     }
 
     self.filled = 0;
+
+    _ = c.ArrowArrayViewReset(&self.view);
 }
 
 pub fn countBatchRows(self: *Self, i: usize) u64 {

@@ -73,12 +73,10 @@ pub fn main(init: std.process.Init) !void {
             .dot => {
                 _ = input.addHistory(query);
                 input.dotCommand(std.mem.span(query), .{
-                    .msg = &msg,
-                    .conn = &state.conn,
-                    .gpa = gpa,
                     .io = io,
-                    .pager = &state.page,
-                    .editor = state.edit
+                    .gpa = gpa, 
+                    .state = &state,
+                    .msg = &msg
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
@@ -96,14 +94,7 @@ pub fn main(init: std.process.Init) !void {
                 _ = input.addHistory(zstr);
                 input.active_query.clear(gpa);
 
-                input.execStatements(qstr, .{
-                    .msg = &msg,
-                    .conn = &state.conn,
-                    .gpa = gpa,
-                    .io = io,
-                    .pager = &state.page,
-                    .editor = state.edit
-                }) catch {
+                input.execStatements(io, gpa, &state, &msg, qstr) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
             },

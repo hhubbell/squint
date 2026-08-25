@@ -224,8 +224,6 @@ pub fn write(buffer: *[]u8, asb: *adbc.TableBuffer) !void {
     var idx: usize = printHeader(buffer, asb.metadata.?);
 
     var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
-    defer iter.deinit();
-
     while (iter.next()) |slot| {
         idx += writeBuffer(buffer, Box.VertSep, idx);
 

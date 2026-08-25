@@ -34,8 +34,6 @@ pub fn write(w: *Io.Writer, gpa: Allocator, asb: *adbc.TableBuffer) !void {
     defer gpa.free(backing);
 
     var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
-    defer iter.deinit();
-
     while (iter.next()) |slot| {
         _ = try w.write(adbc.meta.extractValue(
             slot.meta,

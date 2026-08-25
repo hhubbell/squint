@@ -11,6 +11,7 @@ const ConnectionCatalog = @import("ConnectionCatalog.zig");
 const ConnectionIo = @import("ConnectionIo.zig");
 const Color = @import("render/Color.zig");
 const CsvWriter = @import("render/CsvWriter.zig");
+const State = @import("State.zig");
 const TableWriter = @import("render/TableWriter.zig");
 
 const Allocator = std.mem.Allocator;
@@ -32,12 +33,10 @@ pub var active_query: InputQuery = undefined;
 pub var catalog: ConnectionCatalog = .empty;
 
 pub const DotCommandOptions = struct {
-    msg: *mesg.MessageBuffer,
-    conn: *ConnectionIo,
     gpa: Allocator,
     io: Io,
-    pager: *pager.PagerType,
-    editor: ?[]const u8
+    state: *State,
+    msg: *mesg.MessageBuffer
 };
 
 const DotCommand = struct {
@@ -125,7 +124,7 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
 
-    if (opts.editor == null) {
+    if (opts.state.edit == null) {
         opts.msg.addErr("Editor not available", .{});  
         return error.DotCommandError;
     }
@@ -139,16 +138,16 @@ fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer: Io.File.Writer = file.writer(opts.io, &buffer);
 
-    writer.interface.writeAll(opts.conn.last_statement orelse "") catch |e| {
+    writer.interface.writeAll(opts.state.conn.last_statement orelse "") catch |e| {
         opts.msg.addErr("Could not write last statement {s}", .{@errorName(e)});
         return error.DotCommandError;
     };
 
     try writer.interface.flush();
 
-    try editor.edit(opts.io, opts.editor.?, editor.tmp_buffer);
+    try editor.edit(opts.io, opts.state.edit.?, editor.tmp_buffer);
 
-    try sourceFile(editor.tmp_buffer, opts);
+    try sourceFile(opts.io, opts.gpa, opts.state, opts.msg, editor.tmp_buffer);
 }
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -185,7 +184,7 @@ fn dcHelp(args: *TokenIter, opts: DotCommandOptions) !void {
 }
 
 fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
-    const cur: ?u64 = opts.conn.row_limit;
+    const cur: ?u64 = opts.state.conn.row_limit;
     const new: ?[]const u8 = args.next();
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stderr().writer(opts.io, &buffer);
@@ -201,7 +200,7 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
         return;
     }
 
-    opts.conn.row_limit = std.fmt.parseInt(u64, new.?, 10) catch {
+    opts.state.conn.row_limit = std.fmt.parseInt(u64, new.?, 10) catch {
         opts.msg.addErr("Invalid limit.", .{});
         return error.DotCommandError;
     };
@@ -209,7 +208,7 @@ fn dcLimit(args: *TokenIter, opts: DotCommandOptions) !void {
 
 fn dcNoLimit(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
-    opts.conn.row_limit = null;
+    opts.state.conn.row_limit = null;
 }
 
 fn dcPager(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -221,7 +220,7 @@ fn dcPager(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     }
 
-    opts.pager.* = pager.fromString(page.?) catch {
+    opts.state.page = pager.fromString(page.?) catch {
         opts.msg.addErr("{s} is not a supported pager. "
             ++ "Call .pager [less|more|nopager]", .{page.?});
         return error.DotCommandError;
@@ -245,7 +244,7 @@ fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer: Io.File.Writer = file.writer(opts.io, &buffer);
 
-    CsvWriter.write(&writer.interface, opts.gpa, &opts.conn.last_result) catch |e| {
+    CsvWriter.write(&writer.interface, opts.gpa, &opts.state.conn.last_result) catch |e| {
         opts.msg.addErr(".save failed: {s}", .{@errorName(e)});
         return error.DotCommandError;
     };
@@ -259,66 +258,79 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     };
 
-    try sourceFile(fname, opts);
+    try sourceFile(opts.io, opts.gpa, opts.state, opts.msg, fname);
 }
 
-pub fn sourceFile(path: []const u8, opts: DotCommandOptions) !void {
-    const file = Dir.cwd().openFile(opts.io, path, .{}) catch {
-        opts.msg.addErr(
+pub fn sourceFile(
+    io: Io,
+    gpa: Allocator,
+    state: *State,
+    msg: *mesg.MessageBuffer,
+    path: []const u8
+) !void {
+    const file = Dir.cwd().openFile(io, path, .{}) catch {
+        msg.addErr(
             "Cannot access '{s}': No such file or directory",
             .{ path }
         );
         return error.SourceFileError;
     };
-    defer file.close(opts.io);
+    defer file.close(io);
 
-    const fsize = try file.length(opts.io);
-    const buffer: []u8 = try opts.gpa.alloc(u8, fsize);
-    defer opts.gpa.free(buffer);
+    const fsize = try file.length(io);
+    const buffer: []u8 = try gpa.alloc(u8, fsize);
+    defer gpa.free(buffer);
 
-    var reader: Io.File.Reader = file.reader(opts.io, buffer);
+    var reader: Io.File.Reader = file.reader(io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    try execStatements(buffer, opts);
+    try execStatements(io, gpa, state, msg, buffer);
 }
 
-pub fn execStatement(query: [:0]const u8, opts: DotCommandOptions) !void {
+pub fn execStatement(
+    io: Io,
+    gpa: Allocator,
+    state: *State,
+    msg: *mesg.MessageBuffer,
+    query: [:0]const u8
+) !void {
     // Clear the prior result set
-    opts.conn.clear(opts.gpa);
+    state.conn.clear(gpa);
 
-    const prntbuf = opts.conn.execute(
-        opts.io,
-        opts.gpa,
-        opts.msg,
-        query
-    ) catch {
+    const prntbuf = state.conn.execute(io, gpa, msg, query) catch {
         return error.ExecutionError;
     };
-    defer opts.gpa.free(prntbuf);
+    defer gpa.free(prntbuf);
 
     var source: Io.Reader = .fixed(prntbuf);
 
-    try pager.page(opts.io, opts.pager.*, &source);
+    try pager.page(io, state.page, &source);
 
     // Diagnostics
     var outbuf: [4096]u8 = undefined;
-    var stderr: Io.File.Writer = Io.File.stderr().writer(opts.io, &outbuf);
-    try stderr.interface.print("{f}\n", .{ opts.conn.pmon });
+    var stderr: Io.File.Writer = Io.File.stderr().writer(io, &outbuf);
+    try stderr.interface.print("{f}\n", .{ state.conn.pmon });
     try stderr.interface.flush();
 }
 
-pub fn execStatements(query: []const u8, opts: DotCommandOptions) !void {
-    var stmts: parser.TokenBuffer = try parser.FastScan.scan(opts.gpa, query);
-    defer stmts.deinit(opts.gpa);
+pub fn execStatements(
+    io: Io,
+    gpa: Allocator,
+    state: *State,
+    msg: *mesg.MessageBuffer,
+    query: []const u8
+) !void {
+    var stmts: parser.TokenBuffer = try parser.FastScan.scan(gpa, query);
+    defer stmts.deinit(gpa);
     
-    const stmt_lst: []parser.TokenBuffer = try stmts.split(opts.gpa);
-    defer opts.gpa.free(stmt_lst);
+    const stmt_lst: []parser.TokenBuffer = try stmts.split(gpa);
+    defer gpa.free(stmt_lst);
 
     for (stmt_lst) |stmt| {
-        const qstr: [:0]const u8 = try stmt.asStringZ(opts.gpa);
-        defer opts.gpa.free(qstr);
+        const qstr: [:0]const u8 = try stmt.asStringZ(gpa);
+        defer gpa.free(qstr);
 
-        try execStatement(qstr, opts);
+        try execStatement(io, gpa, state, msg, qstr);
     }
 }
 

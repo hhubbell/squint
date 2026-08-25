@@ -59,7 +59,7 @@ pub fn init(
     const winsize = windowSize(Io.File.stdout().handle, msg);
 
     const edit_exec: ?[]const u8 = editor.whichEditor(io, pinit.environ_map);
-    var page_exec: pager.PagerType = selectPager(io, argp.get("pager"), pinit.environ_map);
+    const page_exec: pager.PagerType = selectPager(io, argp.get("pager"), pinit.environ_map);
 
     var conn: ConnectionIo = try .init(io, gpa);
     conn.connect(gpa, cfg) catch {
@@ -78,14 +78,7 @@ pub fn init(
     };
 
     if (argp.get("exec")) |cmd| {
-        try input.execStatements(cmd, .{
-            .msg = msg,
-            .conn = &conn,
-            .gpa = gpa,
-            .io = io,
-            .pager = &page_exec,
-            .editor = edit_exec
-        });
+        try input.execStatements(io, gpa, &state, msg, cmd);
 
         if (argp.get("interactive") == null) {
             state.mode = .quit;
@@ -94,14 +87,7 @@ pub fn init(
     }
 
     if (argp.get("source")) |path| {
-        try input.sourceFile(path, .{
-            .msg = msg,
-            .conn = &conn,
-            .gpa = gpa,
-            .io = io,
-            .pager = &page_exec,
-            .editor = edit_exec
-        });
+        try input.sourceFile(io, gpa, &state, msg, path);
 
         if (argp.get("interactive") == null) {
             state.mode = .quit;
