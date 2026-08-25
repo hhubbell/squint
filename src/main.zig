@@ -90,7 +90,10 @@ pub fn main(init: std.process.Init) !void {
                 const qstr: []const u8 = try input.active_query.asString(gpa);
                 defer gpa.free(qstr);
 
-                _ = input.addHistory(@ptrCast(qstr));
+                const zstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
+                defer gpa.free(zstr);
+
+                _ = input.addHistory(zstr);
                 input.active_query.clear(gpa);
 
                 input.execStatements(qstr, .{
