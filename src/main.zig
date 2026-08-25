@@ -85,13 +85,10 @@ pub fn main(init: std.process.Init) !void {
                 prompt = @constCast("> \x00");
                 try input.active_query.add(gpa, std.mem.span(query));
 
-                const qstr: []const u8 = try input.active_query.asString(gpa);
+                const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
                 defer gpa.free(qstr);
 
-                const zstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
-                defer gpa.free(zstr);
-
-                _ = input.addHistory(zstr);
+                _ = input.addHistory(qstr);
                 input.active_query.clear(gpa);
 
                 input.execStatements(io, gpa, &state, &msg, qstr) catch {

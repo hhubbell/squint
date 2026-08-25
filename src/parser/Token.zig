@@ -27,7 +27,7 @@ const TokenType = enum {
     COMMENT, BLOCK_COMMENT,
 
     // Whitespace and newlines
-    _WS, _NEWL,
+    _WS, _NEWL, _NUL,
 
     // Parser special
     _ERR, _UNCATEG

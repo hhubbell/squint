@@ -75,7 +75,11 @@ pub fn scan(gpa: Allocator, source: []const u8) !TokenBuffer {
 
         const tok = scanner.scanNext();
 
-        if (tok.is(.BLOCK_COMMENT) or tok.is(.COMMENT)) continue;
+        if (
+            tok.is(.BLOCK_COMMENT)
+            or tok.is(.COMMENT)
+            or tok.is(._NUL)
+        ) continue;
 
         try tokens.append(gpa, tok);
     }
@@ -94,6 +98,7 @@ pub fn scanNext(self: *Self) Token {
     return switch(char) {
         ';' => .init(.SEMICOLON, self.start, self.cur),
         ' ','\r', '\t', '\n' => .init(._WS, self.start, self.cur),
+        '\x00' => .init(._NUL, self.start, self.cur),
         '-' => blk: {
             if (self.matchNext('-')) {
                 // A one line comment starts with `--` and goes to EOL
