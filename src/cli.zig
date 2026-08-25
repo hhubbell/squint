@@ -75,6 +75,10 @@ pub const SimpleArgParser = struct {
             }
         }
     }
+
+    pub fn get(self: Self, key: []const u8) ?[]const u8 {
+        return self.vargs.get(key);
+    }
 };
 
 

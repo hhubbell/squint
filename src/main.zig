@@ -1,114 +1,15 @@
 const std = @import("std");
 const adbc = @import("adbc");
-const c = @import("c");
 
-const cli = @import("cli.zig");
-const editor = @import("editor.zig");
 const input = @import("input.zig");
 const mesg = @import("message.zig");
-const pager = @import("pager.zig");
-const perfd = @import("perf.zig");
-
-const version = @import("build_options").version;
 
 const ConnectionCatalog = @import("ConnectionCatalog.zig");
-const ConnectionIo = @import("ConnectionIo.zig");
-const Color = @import("render/Color.zig");
+const State = @import("State.zig");
 
 const Allocator = std.mem.Allocator;
-const Environ = std.process.Environ;
 const Io = std.Io;
-const posix = std.posix;
 
-const StartupParams = struct {
-    config: ?adbc.AdbcConfig,
-    pager: ?pager.PagerType,
-    editor: ?[]const u8,
-    winsize: ?posix.winsize,
-    mesg: ?*mesg.MessageBuffer
-};
-
-
-/// Print startup information
-fn startupMessage(writer: *Io.Writer, parms: StartupParams) !void {
-    try writer.print("Squint {f} | ADBC CLI\n"
-        ++ "Type \".help\" for dotcommands. "
-        ++ "Type \".exit\" or ^D to quit.\n", .{version});
-
-    if (parms.config) |x| {
-        if (x.driver) |d| {
-            try writer.print("Driver \"{s}\"", .{d});
-
-            if (x.uri) |u| {
-                try writer.print(" | Uri \"{s}\"", .{u});
-            }
-
-            try writer.print("\n", .{});
-        } else {
-            try writer.print("Profile \"{s}\"\n", .{x.profile.?});
-        }
-    }
-
-    if (parms.pager) |x| {
-        try writer.print("Pager \"{s}\"\n", .{@tagName(x)});
-    }
-
-    try writer.print("Editor ", .{});
-    if (parms.editor) |x| {
-        try writer.print("\"{s}\"\n", .{x});
-    } else {
-        try writer.print("unavailable\n", .{});
-    }
-
-    // TODO URI string or connection params?
-
-    if (parms.winsize) |x| {
-        try writer.print("Output window {d} x {d}\n", .{x.row, x.col});
-    }
-
-    // If we encountered any non-fatal errors during startup, print them
-    // all now.
-    if (parms.mesg != null) {
-        const n_err = parms.mesg.?.numErrs();
-
-        if (n_err > 0) {
-            try writer.print("\n{s}Startup Errors ({d}):\n", .{Color.Red, n_err});
-            try parms.mesg.?.printAllErrs(writer);
-            try writer.print("{s}", .{Color.Reset});
-        }
-    }
-
-    try writer.flush();
-}
-
-/// Get the output handle window size
-fn windowSize(handle: Io.File.Handle, msg: *mesg.MessageBuffer) posix.winsize {
-    var winsize: posix.winsize = .{
-        .row = 0,
-        .col = 0,
-        .xpixel = 0,
-        .ypixel = 0
-    };
-
-    const err = posix.system.ioctl(
-        handle,
-        posix.T.IOCGWINSZ,
-        @intFromPtr(&winsize));
-
-    if (posix.errno(err) != .SUCCESS) {
-        msg.addErr("Ioctl winsize unknown.", .{});
-    }
-
-    return winsize;
-}
-
-fn selectPager(io: Io, arg: ?[]const u8, env: *Environ.Map) pager.PagerType {
-    if (arg == null) {
-        return pager.whichPager(io, env);
-    }
-
-    return pager.fromString(arg.?) catch pager.whichPager(io, env);
-}
 
 /// REPL loop
 pub fn main(init: std.process.Init) !void {
@@ -119,89 +20,31 @@ pub fn main(init: std.process.Init) !void {
 
     const io = threaded.io();
 
-    var msg: mesg.MessageBuffer = try .init(gpa, 16);
-    defer msg.deinit(gpa);
-
-    var argp: cli.SimpleArgParser = .{};
-    defer argp.vargs.deinit(gpa);
-
-    argp.parse(gpa, init.minimal.args) catch {
-        msg.addErr("Unexpected argument parsing error.", .{});
-    };
-
-    const cfg: adbc.AdbcConfig = .init(
-        argp.vargs.get("profile"),
-        argp.vargs.get("driver"),
-        argp.vargs.get("uri"));
-
     var buffer: [4096]u8 = undefined;
     var stderr: Io.File.Writer = Io.File.stderr().writer(io, &buffer);
 
-    // TODO:
-    //  We can use window size information to apply some formatting rules to
-    //  the output. But this is not currently something we do anything with.
-    const winsize = windowSize(Io.File.stdout().handle, &msg);
+    var msg: mesg.MessageBuffer = try .init(gpa, 16);
+    defer msg.deinit(gpa);
 
-    const edit_exec: ?[]const u8 = editor.whichEditor(io, init.environ_map);
+    var state: State = State.init(io, gpa, &msg, init) catch |e| {
+        try msg.printAllErrs(&stderr.interface);
 
-    var page_exec: pager.PagerType = selectPager(io,
-        argp.vargs.get("pager"),
-        init.environ_map);
-
-    var conn: ConnectionIo = try .init(io, gpa);
-    conn.connect(gpa, cfg) catch {
-        msg.addFatalErr("{s}", .{conn.lastErrMsg()});
+        return e;
     };
-    defer _ = conn.deinit(gpa) catch {};
+    defer state.deinit(gpa);
 
-    if (argp.vargs.get("exec")) |cmd| {
-        try input.execStatements(cmd, .{
-            .msg = &msg,
-            .conn = &conn,
-            .gpa = gpa,
-            .io = io,
-            .pager = &page_exec,
-            .editor = edit_exec
-        });
-
-        if (argp.vargs.get("interactive") == null) {
-            return;
-        }
-    }
-
-    if (argp.vargs.get("source")) |path| {
-        try input.sourceFile(path, .{
-            .msg = &msg,
-            .conn = &conn,
-            .gpa = gpa,
-            .io = io,
-            .pager = &page_exec,
-            .editor = edit_exec
-        });
-
-        if (argp.vargs.get("interactive") == null) {
-            return;
-        }
-    }
-
-    try startupMessage(&stderr.interface, .{
-        .config = cfg,
-        .pager = page_exec,
-        .editor = edit_exec,
-        .winsize = winsize,
-        .mesg = &msg
-    });
-
-    // If we encountered a fatal error during startup, just abort from here
-    if (msg.numFatal() > 0) {
-        return error.FatalStartupError;
+    if (state.mode == .quit) {
+        return;
     }
 
     // Refresh the connection catalog asyncronously. This information is useful
     // for completion, but it's ok if it's not ready by the time we get to the
     // prompt. Spinning this off reduces the time to prompt, especially for
     // connections with large catalogs, or which take a while to yield a result.
-    var catalog_fut = io.async(ConnectionCatalog.refresh, .{&input.catalog, gpa, &conn});
+    var catalog_fut = io.async(ConnectionCatalog.refresh, .{
+        &input.catalog,
+        gpa,
+        &state.conn});
     defer input.catalog.deinit(gpa);
     defer catalog_fut.cancel(io) catch {};
 
@@ -231,11 +74,11 @@ pub fn main(init: std.process.Init) !void {
                 _ = input.addHistory(query);
                 input.dotCommand(std.mem.span(query), .{
                     .msg = &msg,
-                    .conn = &conn,
+                    .conn = &state.conn,
                     .gpa = gpa,
                     .io = io,
-                    .pager = &page_exec,
-                    .editor = edit_exec
+                    .pager = &state.page,
+                    .editor = state.edit
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
@@ -252,11 +95,11 @@ pub fn main(init: std.process.Init) !void {
 
                 input.execStatements(qstr, .{
                     .msg = &msg,
-                    .conn = &conn,
+                    .conn = &state.conn,
                     .gpa = gpa,
                     .io = io,
-                    .pager = &page_exec,
-                    .editor = edit_exec
+                    .pager = &state.page,
+                    .editor = state.edit
                 }) catch {
                     try msg.printLastErr(&stderr.interface);
                 };
