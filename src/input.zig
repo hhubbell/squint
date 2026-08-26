@@ -536,6 +536,24 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
     }
 }
 
+/// Return an array of keywords that the parser knows
+fn iterKeywords() [parser.Token.KeywordLookup.keys().len][]const u8 {
+    const keys = comptime parser.Token.KeywordLookup.keys();
+    var kcopy: [keys.len][]const u8 = undefined;
+
+    @memcpy(&kcopy, keys);
+
+    // https://ziggit.dev/t/what-is-the-eval-branch-quota/7852
+    @setEvalBranchQuota(4000);
+    std.mem.sort([] const u8, &kcopy, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.order(u8, lhs, rhs) == .lt;
+        }
+    }.lessThan);
+
+    return kcopy;
+}
+
 /// Provide unrestricted suggestions by filling the match index buffer with
 /// a sequence from 0 to length;
 fn fillSequential(
@@ -610,67 +628,7 @@ fn completionSuggestions(
     gpa: Allocator,
     term: []const u8
 ) ![][]const u8 {
-
-    const keywords = comptime [_][]const u8 {
-        "all",
-        "and",
-        "as",
-        "between",
-        "by",
-        "case",
-        "cast",
-        "contains",
-        "create",
-        "cross",
-        "distinct",
-        "else",
-        "end",
-        "except",
-        "extract",
-        "exists",
-        "false",
-        "from",
-        "full",
-        "group",
-        "having",
-        "ilike",
-        "in",
-        "inner",
-        "intersect",
-        "is",
-        "join",
-        "left",
-        "like",
-        "limit",
-        "minus",
-        "not",
-        "null",
-        "on",
-        "or",
-        "order",
-        "outer",
-        "over",
-        "partition",
-        "qualify",
-        "replace",
-        "right",
-        "select",
-        "table",
-        "temp",
-        "temporary",
-        "then",
-        "top",
-        "true",
-        "try_cast",
-        "union",
-        "use",
-        "using",
-        "view",
-        "when",
-        "where",
-        "with"
-    };
-
+    const keywords = comptime iterKeywords();
     var indexes: [keywords.len]usize = undefined;
     const idx = matchFromPrefix(term, &keywords, &indexes);
 
