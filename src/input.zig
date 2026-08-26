@@ -122,7 +122,7 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
 }
 
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
-    _ = args;
+    const input: []const u8 = args.rest();
 
     if (opts.state.edit == null) {
         opts.msg.addErr("Editor not available", .{});  
@@ -138,10 +138,17 @@ fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer: Io.File.Writer = file.writer(opts.io, &buffer);
 
-    writer.interface.writeAll(opts.state.conn.last_statement orelse "") catch |e| {
-        opts.msg.addErr("Could not write last statement {s}", .{@errorName(e)});
-        return error.DotCommandError;
-    };
+    if (input.len > 0) {
+        writer.interface.writeAll(input) catch |e| {
+            opts.msg.addErr("Could not write input {s}", .{@errorName(e)});
+            return error.DotCommandError;
+        };
+    } else {
+        writer.interface.writeAll(opts.state.conn.last_statement orelse "") catch |e| {
+            opts.msg.addErr("Could not write last statement {s}", .{@errorName(e)});
+            return error.DotCommandError;
+        };
+    }
 
     try writer.interface.flush();
 
