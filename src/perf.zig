@@ -48,14 +48,14 @@ pub const PerfData = struct {
         var proc: [5]u8 = undefined;
         var rend: [5]u8 = undefined;
 
-        date.fmt.toDisplayTime(self.exec, &exec);
-        date.fmt.toDisplayTime(self.load, &load);
-        date.fmt.toDisplayTime(self.proc, &proc);
-        date.fmt.toDisplayTime(self.rend, &rend);
-
         try writer.print(
             "{d} rows | exec: {s} load: {s} proc: {s} rend: {s}",
-            .{ self.rows, exec, load, proc, rend }
-        );
+            .{ 
+                self.rows,
+                date.fmt.toDisplayTime(self.exec, &exec),
+                date.fmt.toDisplayTime(self.load, &load),
+                date.fmt.toDisplayTime(self.proc, &proc),
+                date.fmt.toDisplayTime(self.rend, &rend)
+            });
     }
 };
