@@ -420,78 +420,6 @@ pub const InputQuery = struct {
     }
 };
 
-const StatementType = enum {
-    alter, create, delete, drop, insert, select, truncate, update, use
-};
-
-/// Stores a tuple of strings referring to an input buffer that was split on
-/// a space. Both parts can be reconstituted to form the original input buffer.
-/// This means that `lhs` may contain a trailing space. When accessing `lhs`,
-/// use `strippedLhs()` if the trailing space will cause issues.
-const InputSplitTuple = struct {
-    const Self = @This();
-
-    lhs: []const u8,
-    rhs: []const u8,
-
-    pub fn split(buf: []const u8) Self {
-        const idx: usize = std.mem.findScalarLast(u8, buf, ' ') orelse 0;
-
-        if (idx > 0) {
-            return .{
-                .lhs = buf[0..idx + 1],
-                .rhs = buf[idx + 1..]
-            };
-        }
-
-        return .{
-            .lhs = buf[0..idx],
-            .rhs = buf[idx..]
-        };   
-    }
-
-    pub fn hasLhs(self: Self) bool {
-        return self.lhs.len > 0;
-    }
-
-    pub fn hasRhs(self: Self) bool {
-        return self.rhs.len > 0;
-    }
-
-    pub fn strippedLhs(self: Self) []const u8 {
-        if (self.hasLhs()
-            and self.lhs[self.lhs.len - 1] == ' '
-        ) {
-            return self.lhs[0..self.lhs.len - 1];
-        }
-
-        return self.lhs;
-    }
-};
-
-const InputContext = struct {
-    const Self = @This();
-
-    kind: ?StatementType,
-    input: InputSplitTuple,
-    last_word: ?[]const u8,
-
-    pub fn firstLetter(self: Self) ?u8 {
-        if (self.input.hasRhs()) {
-            return self.input.rhs[0];
-        }
-
-        return null;
-    }
-
-    pub fn expectObjectNext(self: Self) bool {
-        if (self.last_word == null) return false;
-
-        return std.mem.eql(u8, self.last_word.?, "from")
-            or std.mem.eql(u8, self.last_word.?, "join");
-    }
-};
-
 
 /// Register keyword completions
 ///
@@ -504,44 +432,80 @@ const InputContext = struct {
 pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c) void {
     const gpa: Allocator = std.heap.c_allocator;
 
-    const inpt_ctx: InputContext = splitInput(std.mem.span(buf));
+    const inpt: []const u8 = std.mem.span(buf);
 
-    if (inpt_ctx.kind == null and active_query.isEmpty()) {
-        const letter: ?u8 = inpt_ctx.firstLetter();
-
-        // Enumerate dotcommands
-        if (letter == '.') {
-            const dots = comptime iterDotCommands();
-            var indexes: [dots.len]usize = undefined;
-            const idx = matchFromPrefix(inpt_ctx.input.rhs, &dots, &indexes);
-
-            for (0..idx) |i| {
-                const dc = dots[indexes[i]];
-                c.linenoiseAddCompletion(compl, @ptrCast(dc));
-            }
-        } else {
-            inline for (std.enums.values(StatementType)) |t| {
-                const tag = @tagName(t);
-
-                if (letter == null or letter == tag[0]) {
-                    c.linenoiseAddCompletion(compl, @ptrCast(tag));
-                }
-            }
+    // Case: We got an empty input. Provide completions which are keywords
+    // which start a sql query, e.g. create, select, etc.
+    if (inpt.len == 0) {
+        inline for (comptime tagNames(parser.StatementType)) |kw| {
+            c.linenoiseAddCompletion(compl, @ptrCast(kw));
         }
 
         return;
     }
 
-    // TODO
-    if (inpt_ctx.expectObjectNext()) {
-        const objects: []ConnectionCatalog.Table = catalog.currentConnTables() catch return;
+    // Case: We got a dotcommand. Enumerate dotcommands that match input
+    // thus far.
+    if (active_query.isEmpty() and inpt.len > 0 and inpt[0] == '.') {
+        const dots = comptime iterDotCommands();
+        var indexes: [dots.len]usize = undefined;
+        const idx = matchFromPrefix(inpt, &dots, &indexes);
 
-        for (objects) |obj| {
-            const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
-                u8,
-                &.{ inpt_ctx.input.lhs, obj.name },
-                '\x00'
-            ) catch return;
+        for (0..idx) |i| {
+            const dc = dots[indexes[i]];
+            // FIXME: Is the use of ptrCast here a possible bug? Why does this
+            // sometimes work and sometimes not? Is the difference whether a
+            // string is comptime known?
+            c.linenoiseAddCompletion(compl, @ptrCast(dc));
+        }
+
+        return;
+    }
+
+    // We have some unknown input that is likely a sql query. To properly
+    // identify the best possible completions, we need to scan the input into
+    // tokens.
+    const ctx: parser.TokenBuffer = parser.FastScan.scan(gpa, inpt) catch return;
+
+    const rhs: []const u8 = ctx.asStringRange(gpa, 0, ctx.items.len - 1) catch return;
+    defer gpa.free(rhs);
+
+    // Case: We just passed a token which indicates a special behavior: the
+    // next completion should be an object from the database catalog.
+    if (expectObjectNext(ctx)) {
+        const objects: []ConnectionCatalog.Table = catalog.currentConnTables() catch return;
+        const indexes: []usize = gpa.alloc(usize, objects.len) catch return;
+        defer gpa.free(indexes);
+
+        const idx = if (ctx.lastToken().isWhitespace()) blk: {
+            break :blk fillSequential(indexes);
+        } else blk: {
+            // NOTE: Usage of matchObjectFromPrefix is used here specifically
+            // to avoid allocating a buffer just to copy .name from objects
+            // for comparison.
+            break :blk matchObjectFromPrefix(
+                @typeInfo(@TypeOf(objects)).pointer.child,
+                ctx.tokenString(ctx.lastToken()),
+                objects,
+                indexes);
+        };
+
+        for (0..idx) |i| {
+            // This is extremely clunky trying to preseve a possible trailing
+            // space. There is surely a cleaner way to do this.
+            const req: [:0]const u8 = if (ctx.lastToken().isWhitespace()) blk: {
+                break :blk std.mem.concatWithSentinel(gpa,
+                    u8,
+                    &.{ rhs, " ", objects[indexes[i]].name },
+                    '\x00'
+                ) catch return;
+            } else blk: {
+                break :blk std.mem.concatWithSentinel(gpa,
+                    u8,
+                    &.{ rhs, objects[indexes[i]].name },
+                    '\x00'
+                ) catch return;
+            };
             defer gpa.free(req);
             c.linenoiseAddCompletion(compl, @ptrCast(req));
         }
@@ -549,19 +513,39 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
         return;
     }
 
-    const sugs = completionSuggestions(gpa, inpt_ctx.input.rhs, inpt_ctx) catch return;
-    defer gpa.free(sugs);
-
-    for (sugs) |sug| {
-        const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
-            u8,
-            &.{ inpt_ctx.input.lhs, sug },
-            '\x00'
+    // Case: We have at least one token but it is not whitespace, therefore we
+    // are still on the word being typed. Try to complete that word.
+    if (!ctx.lastToken().isWhitespace()) {
+        const sugs = completionSuggestions(gpa,
+            ctx.tokenString(ctx.lastToken())
         ) catch return;
-        defer gpa.free(req);
+        defer gpa.free(sugs);
 
-        c.linenoiseAddCompletion(compl, @ptrCast(req));
+        for (sugs) |sug| {
+            const req: [:0]const u8 = std.mem.concatWithSentinel(gpa,
+                u8,
+                &.{ rhs, sug },
+                '\x00'
+            ) catch return;
+            defer gpa.free(req);
+
+            c.linenoiseAddCompletion(compl, @ptrCast(req));
+        }
+
+        return;
     }
+}
+
+/// Provide unrestricted suggestions by filling the match index buffer with
+/// a sequence from 0 to length;
+fn fillSequential(
+    matches: []usize
+) usize {
+    for (0..matches.len) |i| {
+        matches[i] = i;
+    }
+
+    return matches.len;
 }
 
 /// Provide suggestions based on the strings matching so far. Returns the
@@ -591,12 +575,41 @@ fn matchFromPrefix(
     return idx;
 }
 
+/// Provide suggestions based on the strings matching T.name so far. Requires
+/// that T have a `name` field. Returns the number of potential matches.
+/// Provides the indexes of these matches from the `completions` input slice
+/// on the `matches` input slice. 
+///
+/// FIXME: Perhaps we can pass in the field name to make this more generic
+fn matchObjectFromPrefix(
+    comptime T: type,
+    term: []const u8,
+    completions: []T,
+    matches: []usize
+) usize {
+    // Both completions and matches must be the same length
+    assert(completions.len == matches.len);
+
+    var idx: usize = 0;
+
+    for (completions, 0..) |cmp, i| {
+        if (cmp.name.len < term.len) {
+            continue;
+        }
+
+        if (std.mem.eql(u8, term, cmp.name[0..term.len])) {
+            matches[idx] = i;
+            idx += 1;
+        }
+    }
+
+    return idx;
+}
+
 fn completionSuggestions(
     gpa: Allocator,
-    term: []const u8,
-    context: InputContext
+    term: []const u8
 ) ![][]const u8 {
-    _ = context;
 
     const keywords = comptime [_][]const u8 {
         "all",
@@ -670,28 +683,42 @@ fn completionSuggestions(
     return sugs;
 }
 
-fn statementType(buf: []const u8) ?StatementType {
-    var iter = std.mem.splitScalar(u8, buf, ' ');
+/// Returns true if the object to be completed is expected to be a database
+/// object. E.g. select ... from m[y_table]. This function searches backwards
+/// from the input context to check the last non-ws token and the penultimate
+/// non-ws token to determine if it is a token which should be followed by a
+/// database object.
+fn expectObjectNext(context: parser.TokenBuffer) bool {
+    var tries: u8 = 2;
+    var i: usize = context.items.len - 1;
 
-    return std.meta.stringToEnum(StatementType, iter.first());
-}
+    while (tries > 0 and i >= 0) : (i -= 1) {
+        const tok: parser.Token = context.items[i];
 
-fn splitInput(buf: []const u8) InputContext {
-    const cur_input = InputSplitTuple.split(buf);
+        if (tok.isWhitespace()) continue;
 
-    var last_word: ?[]const u8 = null;
-    if (cur_input.hasLhs()) {
-        const last_input = InputSplitTuple.split(cur_input.strippedLhs());
+        if (
+            std.mem.eql(u8, context.tokenString(tok), "from")
+            or std.mem.eql(u8, context.tokenString(tok), "join")
+        ) return true;
 
-        if (last_input.hasRhs()) {
-            last_word = last_input.rhs;
-        }
+        tries -= 1;
+
+        if (i == 0) break;
     }
 
-    return .{
-        .kind = statementType(buf),
-        .input = cur_input,
-        .last_word = last_word
-    };
+    return false;
 }
 
+fn tagNames(comptime E: type) [std.meta.fieldNames(E).len][]const u8 {
+    return comptime blk: {
+        const names = std.meta.fieldNames(E);
+        var res: [names.len][]const u8 = undefined;
+
+        for (names, 0..) |f, i| {
+            res[i] = f;
+        }
+
+        break :blk res;
+    };
+}
