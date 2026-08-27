@@ -7,6 +7,7 @@ const editor = @import("editor.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
 
+const Box = @import("render/TableWriter.zig").Box;
 const ConnectionCatalog = @import("ConnectionCatalog.zig");
 const ConnectionIo = @import("ConnectionIo.zig");
 const Color = @import("render/Color.zig");
@@ -108,18 +109,71 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = args;
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stderr().writer(opts.io, &buffer);
-    
-    for (catalog.catalogs(), 0..) |obj, i| {
-        if (i == catalog.current_database) {
-            try writer.interface.print("* {s}{s}{s}\n", .{
-                Color.Yellow, obj.name, Color.Reset
-            });
-        } else {
-            try writer.interface.print("{s}\n", .{obj.name});
+
+    const cats = catalog.catalogs();
+    for (cats, 0..) |obj, i| {
+        try treeLine(
+            &writer.interface,
+            opts.gpa,
+            obj.name,
+            0, 
+            if (i == catalog.current_database) Color.Yellow else null,
+            i == cats.len - 1
+        );
+
+        for (obj.children, 0..) |sch, j| {
+            try treeLine(
+                &writer.interface,
+                opts.gpa,
+                sch.name,
+                1, 
+                if (j == catalog.current_schema) Color.Yellow else null,
+                j == obj.children.len - 1
+            );
+
+            for (sch.children, 0..) |tab, k| {
+                try treeLine(
+                    &writer.interface,
+                    opts.gpa,
+                    tab.name,
+                    2, 
+                    null,
+                    k == sch.children.len - 1
+                );
+            }
         }
-        try writer.interface.flush();
+    }
+    try writer.interface.flush();
+}
+
+fn treeLine(
+    writer: *Io.Writer,
+    gpa: Allocator,
+    val: []const u8,
+    depth: usize,
+    color: ?[]const u8,
+    term: bool
+) !void {
+    const shape = if (term) Box.LBotCor else Box.LJunc;
+    const lead = if (depth > 0) blk: {
+        break :blk try std.fmt.allocPrint(gpa, "{[value]s:<[width]}", .{
+            .value = Box.VertSep,
+            .width = (depth * 4) + Box.VertSep.len - 1
+        });
+    } else null;
+    defer if (lead) |l| gpa.free(l);
+
+    if (color) |clr| {
+        try writer.print("{s}{s}{s}{s} {s}{s}{s}\n", .{
+            lead orelse "", shape, Box.HorizSep, Box.HorizSep, clr, val, Color.Reset
+        });
+    } else {
+        try writer.print("{s}{s}{s}{s} {s}\n", .{
+            lead orelse "", shape, Box.HorizSep, Box.HorizSep, val
+        });
     }
 }
+
 
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
     const input: []const u8 = args.rest();
