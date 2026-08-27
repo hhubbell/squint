@@ -129,15 +129,7 @@ pub fn getInfo(
         }
     }
 
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-    try err.checkNanoArrow(c.ArrowArrayViewInitFromSchema(&view, &buf.schema, &buf.err));
-    try err.checkNanoArrowStream(c.ArrowArrayViewSetArray(
-        &view,
-        &buf.items[0],
-        &buf.err
-    ));
-
-    const info_val_c = view.children[1];
+    const info_val_c = (try buf.asArrayView(0)).children[1];
 
     const type_id = c.ArrowArrayViewUnionTypeId(info_val_c, 0);
     const offset = c.ArrowArrayViewUnionChildOffset(info_val_c, 0);
@@ -162,13 +154,13 @@ pub fn getInfo(
 pub fn getOption(
     gpa: Allocator,
     conn: *c.AdbcConnection,
-    opt: []const u8,
+    opt: [*c]const u8,
     errs: *c.AdbcError
 ) !?[]const u8 {
     var opt_len: usize = 0;
 
     err.checkAdbc(c.AdbcConnectionGetOption(conn,
-        @ptrCast(opt),
+        opt,
         null,
         &opt_len,
         errs
@@ -182,7 +174,7 @@ pub fn getOption(
     defer gpa.free(opt_buf);
 
     err.checkAdbc(c.AdbcConnectionGetOption(conn,
-        @ptrCast(opt),
+        opt,
         opt_buf.ptr,
         &opt_len,
         errs
