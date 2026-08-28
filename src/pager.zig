@@ -118,6 +118,8 @@ fn morePipe(io: Io, buffer: []u8) !Pager {
     };
 }
 
+/// Deprecated
+///
 /// Write output unbuffered to a child process pipe. In the event the pipe
 /// closes, clean up and return, masking the WriteFailed error
 fn writeChild(io: Io, child: *std.process.Child, source: *Io.Reader) !void {

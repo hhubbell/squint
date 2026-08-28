@@ -6,6 +6,7 @@ const editor = @import("editor.zig");
 const input = @import("input.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
+const render = @import("render/root.zig");
 
 const version = @import("build_options").version;
 
@@ -30,6 +31,7 @@ conn: ConnectionIo,
 edit: ?[]const u8,
 page: pager.PagerType,
 winsize: posix.winsize,
+tbl_writer: render.WriterType,
 mode: Mode,
 
 /// Initialize the application state from cli arguments. Conduct all necessary
@@ -74,6 +76,7 @@ pub fn init(
         .edit = edit_exec,
         .page = page_exec,
         .winsize = winsize,
+        .tbl_writer = .table,
         .mode = .interactive
     };
 

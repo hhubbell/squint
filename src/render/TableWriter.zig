@@ -1,31 +1,24 @@
 const std = @import("std");
 const adbc = @import("adbc");
-const c = @import("c");
 
 const Color = @import("Color.zig");
+const Shape = @import("Shape.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-
 const PAD: usize = 2;
+const HorizontalSeparator = enum { Top, Middle, Bottom };
 
-pub const HorizontalSeparator = enum { Top, Middle, Bottom };
+const Self = @This();
 
-pub const Box = struct {
-    pub const HorizSep: []const u8 = "\u{2500}";
-    pub const VertSep: []const u8 = "\u{2502}";
-    pub const LJunc: []const u8 = "\u{251C}";
-    pub const RJunc: []const u8 = "\u{2524}";
-    pub const FJunc: []const u8 = "\u{253C}";
-    pub const TJunc: []const u8 = "\u{252C}";
-    pub const BJunc: []const u8 = "\u{2534}";
-    pub const LUpCor: []const u8 = "\u{250C}";
-    pub const RUpCor: []const u8 = "\u{2510}";
-    pub const LBotCor: []const u8 = "\u{2514}";
-    pub const RBotCor: []const u8 = "\u{2518}";
-};
 
+interface: *Io.Writer,
+
+
+pub fn init(interface: *Io.Writer) Self {
+    return .{ .interface = interface };
+}
 
 /// Determine the required buffer size for printing a stream result set. By
 // calculating the required buffer size ahead of time, instead of dynamically
@@ -62,9 +55,9 @@ pub fn calcResultBufSize(meta: []adbc.ColMetadata, rows: u64) u64 {
 
 /// Determine the required buffer size for printing one row without the
 /// header
-pub fn calcRowBufSize(meta: []adbc.ColMetadata) u64 {
-    const sep_w: u64 = Box.VertSep.len; // For col sep box char
-    const nl_w: u64 = "\n".len;         // Newline len
+fn calcRowBufSize(meta: []adbc.ColMetadata) u64 {
+    const sep_w: u64 = Shape.Box.VertSep.len;
+    const nl_w: u64 = "\n".len;
 
     var accum: u64 = sep_w; 
 
@@ -79,9 +72,9 @@ pub fn calcRowBufSize(meta: []adbc.ColMetadata) u64 {
 
 /// Determine the required buffer size for printing one row of box drawing
 /// characters. E.g. top border, bottom border.
-pub fn calcRowBoxSize(meta: []adbc.ColMetadata) u64 {
-    const sep_w: u64 = Box.VertSep.len; // For col sep box char
-    const nl_w: u64 = "\n".len;         // Newline len
+fn calcRowBoxSize(meta: []adbc.ColMetadata) u64 {
+    const sep_w: u64 = Shape.Box.VertSep.len;
+    const nl_w: u64 = "\n".len;
 
     var accum: u64 = sep_w; 
 
@@ -95,7 +88,7 @@ pub fn calcRowBoxSize(meta: []adbc.ColMetadata) u64 {
 }
 
 /// Determine the required buffer size for printing all color escape sequences
-pub fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
+fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
     var accum: u64 = 0;
 
     for (meta) |col| {
@@ -105,93 +98,124 @@ pub fn calcColorBufSize(meta: []adbc.ColMetadata) u64 {
     return accum;
 }
 
-// Copy a string buffer to another string buffer and center the string as
-// much as possible
-pub fn padCenterValue(buffer: *[]u8, value: []const u8) usize {
-    const full = buffer.*.len;
-    const pad = full - value.len;
-    const lpad = @divFloor(pad, 2);
-    const rpad = pad - lpad;
+/// Write a TableBuffer to an Io.Writer interface, by way of a fixed backing
+/// buffer that is sized to contain the entire write in one string. Sometimes
+/// this writer is faster than StreamingTableBuffer. This was the original
+/// TableWriter, but StreamingTableWriter is easier to reason about.
+pub fn write(
+    self: Self,
+    gpa: Allocator,
+    asb: *adbc.TableBuffer
+) !void {
+    var buffer: []u8 = try gpa.alloc(u8, calcResultBufSize(
+        asb.metadata.?,
+        asb.countRows()));
+    defer gpa.free(buffer);
 
-    @memmove(buffer.*[lpad..full - rpad], value);
-    @memset(buffer.*[0..lpad], ' ');
-    @memset(buffer.*[full - rpad..full], ' ');
+    const box_w = calcRowBoxSize(asb.metadata.?);
 
-    return full;
+    var idx: usize = writeHeader(&buffer, asb.metadata.?);
+
+    var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
+    while (iter.next()) |slot| {
+        idx += writeBuffer(&buffer, Shape.Box.VertSep, idx);
+
+        var byte_w = asb.metadata.?[slot.col].data.bytes + PAD;
+
+        if (adbc.meta.isNull(slot.view, slot.row)) {
+            byte_w += Color.Grey.len + Color.Reset.len;
+
+            idx += padCenterValue(
+                @constCast(&buffer[idx..idx + byte_w]),
+                Color.Grey ++ "null" ++ Color.Reset);
+        } else {
+            const val_str = adbc.meta.extractValue(
+                slot.meta,
+                buffer[idx..idx + byte_w],
+                slot.view,
+                slot.row);
+
+            if (adbc.meta.isNumeric(slot.view)) {
+                idx += padRightJustValue(
+                    @constCast(&buffer[idx..idx + byte_w]),
+                    val_str);
+            } else {
+                idx += padLeftJustValue(
+                    @constCast(&buffer[idx..idx + byte_w]),
+                    val_str);
+            }
+        }
+
+        if (slot.col >= iter.table.countCols() - 1) {
+            idx += writeBuffer(&buffer, Shape.Box.VertSep, idx);
+            idx += writeBuffer(&buffer, "\n", idx);
+        }
+    }
+
+    idx += writeHorizSep(@constCast(&buffer[idx..idx + box_w]), asb.metadata.?, .Bottom);
+
+    var source: Io.Reader = .fixed(buffer);
+    _ = try source.streamRemaining(self.interface);
+    try self.interface.flush();
 }
 
-// Copy a string buffer to another string buffer and left-justify the string
-// as much as possible
-pub fn padLeftJustValue(buffer: *[]u8, value: []const u8) usize {
-    const full = buffer.*.len;
-    const pad = full - value.len;
-    const lpad = 1;
-    const rpad = pad - lpad;
+/// Copy a value slice to buffer. Return the number of bytes written.
+fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {
+    const until = i + value.len;
 
-    @memmove(buffer.*[lpad..full - rpad], value);
-    @memset(buffer.*[0..lpad], ' ');
-    @memset(buffer.*[full - rpad..full], ' ');
+    @memcpy(buffer.*[i..until], value);
 
-    return full;
+    return value.len;
 }
 
-// Copy a string buffer to another string buffer and right-justify the string
-// as much as possible
-pub fn padRightJustValue(buffer: *[]u8, value: []const u8) usize {
-    const full = buffer.*.len;
-    const pad = full - value.len;
-    const rpad = 1;
-    const lpad = pad - rpad;
-
-    @memmove(buffer.*[lpad..full - rpad], value);
-    @memset(buffer.*[0..lpad], ' ');
-    @memset(buffer.*[full - rpad..full], ' ');
-
-    return full;
-}
-
-pub fn printHeader(buffer: *[]u8, header: []adbc.ColMetadata) usize {
+/// Given a slice of ColMetadata, generate a header for the table with box
+/// drawing characters.
+fn writeHeader(buffer: *[]u8, header: []adbc.ColMetadata) usize {
     const box_w = calcRowBoxSize(header);
 
     var idx: usize = 0;
-    idx = printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Top);
-    idx += writeBuffer(buffer, Box.VertSep, idx);
+    idx = writeHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Top);
+    idx += writeBuffer(buffer, Shape.Box.VertSep, idx);
 
     for (header) |col| {
         var colbuf: []u8 = buffer.*[idx..idx + col.data.width + PAD];
         idx += padCenterValue(&colbuf, col.name);
-        idx += writeBuffer(buffer, Box.VertSep, idx);
+        idx += writeBuffer(buffer, Shape.Box.VertSep, idx);
     }
 
     idx += writeBuffer(buffer, "\n", idx);
 
-    idx += printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Middle);
+    idx += writeHorizSep(@constCast(&buffer.*[idx..idx + box_w]), header, .Middle);
 
     return idx;
 }
 
 /// Print the border horizontal separator to a buffer.
 /// Return the number of bytes written
-pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: HorizontalSeparator) usize {
+fn writeHorizSep(
+    buffer: *[]u8,
+    header: []adbc.ColMetadata,
+    orientation: HorizontalSeparator
+) usize {
     var l_s: []const u8 = undefined;
     var i_s: []const u8 = undefined;
     var r_s: []const u8 = undefined;
 
     switch (orientation) {
         .Top => {
-            l_s = Box.LUpCor;
-            i_s = Box.TJunc;
-            r_s = Box.RUpCor;
+            l_s = Shape.Box.LUpCor;
+            i_s = Shape.Box.TJunc;
+            r_s = Shape.Box.RUpCor;
         },
         .Middle => {
-            l_s = Box.LJunc;
-            i_s = Box.FJunc;
-            r_s = Box.RJunc;
+            l_s = Shape.Box.LJunc;
+            i_s = Shape.Box.FJunc;
+            r_s = Shape.Box.RJunc;
         },
         .Bottom => {
-            l_s = Box.LBotCor;
-            i_s = Box.BJunc;
-            r_s = Box.RBotCor;
+            l_s = Shape.Box.LBotCor;
+            i_s = Shape.Box.BJunc;
+            r_s = Shape.Box.RBotCor;
         }
     }
 
@@ -203,7 +227,7 @@ pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: Hor
         // There's probably a neat way to do this without a loop
         // but tricky w/ unicode
         for (0..col.data.width + PAD) |_| {
-            idx += writeBuffer(buffer, Box.HorizSep, idx);
+            idx += writeBuffer(buffer, Shape.Box.HorizSep, idx);
         }
 
         if (i < header.len - 1) {
@@ -218,56 +242,48 @@ pub fn printHorizSep(buffer: *[]u8, header: []adbc.ColMetadata, orientation: Hor
     return idx;
 }
 
-pub fn write(buffer: *[]u8, asb: *adbc.TableBuffer) !void {
-    const box_w = calcRowBoxSize(asb.metadata.?);
+// Copy a string buffer to another string buffer and center the string as
+// much as possible
+fn padCenterValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const lpad = @divFloor(pad, 2);
+    const rpad = pad - lpad;
 
-    var idx: usize = printHeader(buffer, asb.metadata.?);
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
 
-    var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
-    while (iter.next()) |slot| {
-        idx += writeBuffer(buffer, Box.VertSep, idx);
-
-        var byte_w = asb.metadata.?[slot.col].data.bytes + PAD;
-
-        if (adbc.meta.isNull(slot.view, slot.row)) {
-            byte_w += Color.Grey.len + Color.Reset.len;
-
-            idx += padCenterValue(
-                @constCast(&buffer.*[idx..idx + byte_w]),
-                Color.Grey ++ "null" ++ Color.Reset);
-        } else {
-            const val_str = adbc.meta.extractValue(
-                slot.meta,
-                buffer.*[idx..idx + byte_w],
-                slot.view,
-                slot.row);
-
-            if (adbc.meta.isNumeric(slot.view)) {
-                idx += padRightJustValue(
-                    @constCast(&buffer.*[idx..idx + byte_w]),
-                    val_str);
-            } else {
-                idx += padLeftJustValue(
-                    @constCast(&buffer.*[idx..idx + byte_w]),
-                    val_str);
-            }
-        }
-
-        if (slot.col >= iter.table.countCols() - 1) {
-            idx += writeBuffer(buffer, Box.VertSep, idx);
-            idx += writeBuffer(buffer, "\n", idx);
-        }
-    }
-
-    idx += printHorizSep(@constCast(&buffer.*[idx..idx + box_w]), asb.metadata.?, .Bottom);
+    return full;
 }
 
+// Copy a string buffer to another string buffer and left-justify the string
+// as much as possible
+fn padLeftJustValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const lpad = 1;
+    const rpad = pad - lpad;
 
-/// Copy a value slice to buffer. Return the number of bytes written.
-fn writeBuffer(buffer: *[]u8, value: []const u8, i: usize) usize {
-    const until = i + value.len;
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
 
-    @memcpy(buffer.*[i..until], value);
-
-    return value.len;
+    return full;
 }
+
+// Copy a string buffer to another string buffer and right-justify the string
+// as much as possible
+fn padRightJustValue(buffer: *[]u8, value: []const u8) usize {
+    const full = buffer.*.len;
+    const pad = full - value.len;
+    const rpad = 1;
+    const lpad = pad - rpad;
+
+    @memmove(buffer.*[lpad..full - rpad], value);
+    @memset(buffer.*[0..lpad], ' ');
+    @memset(buffer.*[full - rpad..full], ' ');
+
+    return full;
+}
+

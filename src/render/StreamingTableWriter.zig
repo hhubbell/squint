@@ -1,36 +1,28 @@
 const std = @import("std");
 const adbc = @import("adbc");
-const c = @import("c");
 
 const Color = @import("Color.zig");
+const Shape = @import("Shape.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-
 const PAD: usize = 2;
+const HorizontalSeparator = enum { Top, Middle, Bottom };
 
-pub const HorizontalSeparator = enum { Top, Middle, Bottom };
+const Self = @This();
 
-pub const Box = struct {
-    pub const HorizSep: []const u8 = "\u{2500}";
-    pub const VertSep: []const u8 = "\u{2502}";
-    pub const LJunc: []const u8 = "\u{251C}";
-    pub const RJunc: []const u8 = "\u{2524}";
-    pub const FJunc: []const u8 = "\u{253C}";
-    pub const TJunc: []const u8 = "\u{252C}";
-    pub const BJunc: []const u8 = "\u{2534}";
-    pub const LUpCor: []const u8 = "\u{250C}";
-    pub const RUpCor: []const u8 = "\u{2510}";
-    pub const LBotCor: []const u8 = "\u{2514}";
-    pub const RBotCor: []const u8 = "\u{2518}";
-};
 
+interface: *Io.Writer,
+
+
+pub fn init(interface: *Io.Writer) Self {
+    return .{ .interface = interface };
+}
 
 /// Determine the required min buffer size for printing a column by returning
 /// the widest column width
 pub fn calcMaxWidth(meta: []adbc.ColMetadata) u64 {
-
     var width: u64 = 0;
     for (meta) |col| {
         width = @max(width, col.data.width);
@@ -39,122 +31,26 @@ pub fn calcMaxWidth(meta: []adbc.ColMetadata) u64 {
     return width;
 }
 
-/// Write padding to the writer interface n times.
-pub fn writePad(writer: *Io.Writer, width: usize) !void {
-    // Is this the fastest way? Or is there a better approach?
-    for (0..width) |_| {
-        try writer.writeAll(" ");
-    }
-}
+/// Write a TableBuffer to an Io.Writer interface. Requires an allocator
+/// to make one allocation for a buffer as wide as the widest column. Will
+/// flush.
+pub fn write(
+    self: Self,
+    gpa: Allocator,
+    asb: *adbc.TableBuffer
+) !void {
+    const colb: []u8 = try gpa.alloc(u8, calcMaxWidth(asb.metadata.?));
+    defer gpa.free(colb);
 
-/// Copy a string buffer to another string buffer and center the string as
-/// much as possible
-pub fn padCenterValue(writer: *Io.Writer, value: []const u8, width: usize) !void {
-    const pad = width - value.len;
-    const lpad = @divFloor(pad, 2);
-    const rpad = pad - lpad;
-
-    try writePad(writer, lpad);
-    try writer.writeAll(value);
-    try writePad(writer, rpad);
-}
-
-/// Copy a string buffer to another string buffer and left-justify the string
-/// as much as possible
-pub fn padLeftJustValue(writer: *Io.Writer, value: []const u8, width: usize) !void {
-    const pad = width - value.len;
-    const lpad = 1;
-    const rpad = pad - lpad;
-
-    try writePad(writer, lpad);
-    try writer.writeAll(value);
-    try writePad(writer, rpad);
-}
-
-/// Copy a string buffer to another string buffer and right-justify the string
-/// as much as possible
-pub fn padRightJustValue(writer: *Io.Writer, value: []const u8, width: usize) !void {
-    const pad = width - value.len;
-    const rpad = 1;
-    const lpad = pad - rpad;
-
-    try writePad(writer, lpad);
-    try writer.writeAll(value);
-    try writePad(writer, rpad);
-}
-
-pub fn writeHeader(writer: *Io.Writer, header: []adbc.ColMetadata) !void {
-    try writeHorizSep(writer, header, .Top);
-
-    try writer.writeAll(Box.VertSep);
-
-    for (header) |col| {
-        try padCenterValue(writer, col.name, col.data.width + PAD);
-        try writer.writeAll(Box.VertSep);
-    }
-
-    try writer.writeAll("\n");
-    try writeHorizSep(writer, header, .Middle);
-    try writer.flush();
-}
-
-/// Print the border horizontal separator to a buffer.
-/// Return the number of bytes written
-pub fn writeHorizSep(writer: *Io.Writer, header: []adbc.ColMetadata, orientation: HorizontalSeparator) !void {
-    var l_s: []const u8 = undefined;
-    var i_s: []const u8 = undefined;
-    var r_s: []const u8 = undefined;
-
-    switch (orientation) {
-        .Top => {
-            l_s = Box.LUpCor;
-            i_s = Box.TJunc;
-            r_s = Box.RUpCor;
-        },
-        .Middle => {
-            l_s = Box.LJunc;
-            i_s = Box.FJunc;
-            r_s = Box.RJunc;
-        },
-        .Bottom => {
-            l_s = Box.LBotCor;
-            i_s = Box.BJunc;
-            r_s = Box.RBotCor;
-        }
-    }
-
-    try writer.writeAll(l_s);
-
-    for (header, 0..) |col, i| {
-        // There's probably a neat way to do this without a loop
-        // but tricky w/ unicode
-        for (0..col.data.width + PAD) |_| {
-            try writer.writeAll(Box.HorizSep);
-        }
-
-        if (i < header.len - 1) {
-            try writer.writeAll(i_s);
-        } else {
-            try writer.writeAll(r_s);
-        }
-    }
-
-    try writer.writeAll("\n");
-    try writer.flush();
-}
-
-pub fn write(writer: *Io.Writer, asb: *adbc.TableBuffer, colb: []u8) !void {
-    try writeHeader(writer, asb.metadata.?);
+    try writeHeader(self.interface, asb.metadata.?);
 
     var iter: adbc.TableBuffer.Iterator = try asb.iter(.colwise);
-    defer iter.deinit();
-
     while (iter.next()) |slot| {
-        // Left side of table border
-        try writer.writeAll(Box.VertSep);
+        // Left side of cell border
+        try self.interface.writeAll(Shape.Box.VertSep);
 
         if (adbc.meta.isNull(slot.view, slot.row)) {
-            try padCenterValue(writer,
+            try padCenterValue(self.interface,
                 Color.Grey ++ "null" ++ Color.Reset,
                 slot.meta.data.width + PAD + Color.Grey.len + Color.Reset.len
             );
@@ -166,18 +62,136 @@ pub fn write(writer: *Io.Writer, asb: *adbc.TableBuffer, colb: []u8) !void {
                 slot.row);
 
             if (adbc.meta.isNumeric(slot.view)) {
-                try padRightJustValue(writer, val_str, slot.meta.data.width + PAD);
+                try padRightJustValue(self.interface, val_str, slot.meta.data.width + PAD);
             } else {
-                try padLeftJustValue(writer, val_str, slot.meta.data.width + PAD);
+                try padLeftJustValue(self.interface, val_str, slot.meta.data.width + PAD);
             }
         }
 
         if (slot.col >= iter.table.countCols() - 1) {
-            try writer.writeAll(Box.VertSep);
-            try writer.writeAll("\n");
+            try self.interface.writeAll(Shape.Box.VertSep);
+            try self.interface.writeAll("\n");
         }
     }
 
-    try writeHorizSep(writer, asb.metadata.?, .Bottom);
+    try writeHorizSep(self.interface, asb.metadata.?, .Bottom);
+    try self.interface.flush();
+}
+
+/// Given a slice of ColMetadata, generate a header for the table with box
+/// drawing characters.
+fn writeHeader(writer: *Io.Writer, header: []adbc.ColMetadata) !void {
+    try writeHorizSep(writer, header, .Top);
+
+    try writer.writeAll(Shape.Box.VertSep);
+
+    for (header) |col| {
+        try padCenterValue(writer, col.name, col.data.width + PAD);
+        try writer.writeAll(Shape.Box.VertSep);
+    }
+
+    try writer.writeAll("\n");
+    try writeHorizSep(writer, header, .Middle);
+}
+
+/// Print the border horizontal separator to a buffer.
+/// Return the number of bytes written
+fn writeHorizSep(
+    writer: *Io.Writer,
+    header: []adbc.ColMetadata,
+    orientation: HorizontalSeparator
+) !void {
+    var l_s: []const u8 = undefined;
+    var i_s: []const u8 = undefined;
+    var r_s: []const u8 = undefined;
+
+    switch (orientation) {
+        .Top => {
+            l_s = Shape.Box.LUpCor;
+            i_s = Shape.Box.TJunc;
+            r_s = Shape.Box.RUpCor;
+        },
+        .Middle => {
+            l_s = Shape.Box.LJunc;
+            i_s = Shape.Box.FJunc;
+            r_s = Shape.Box.RJunc;
+        },
+        .Bottom => {
+            l_s = Shape.Box.LBotCor;
+            i_s = Shape.Box.BJunc;
+            r_s = Shape.Box.RBotCor;
+        }
+    }
+
+    try writer.writeAll(l_s);
+
+    for (header, 0..) |col, i| {
+        // There's probably a neat way to do this without a loop
+        // but tricky w/ unicode
+        for (0..col.data.width + PAD) |_| {
+            try writer.writeAll(Shape.Box.HorizSep);
+        }
+
+        if (i < header.len - 1) {
+            try writer.writeAll(i_s);
+        } else {
+            try writer.writeAll(r_s);
+        }
+    }
+
+    try writer.writeAll("\n");
+}
+
+/// Write padding to the writer interface n times.
+fn writePad(writer: *Io.Writer, width: usize) !void {
+    // Is this the fastest way? Or is there a better approach?
+    for (0..width) |_| {
+        try writer.writeByte(' ');
+    }
+}
+
+/// Write a string as centered as possible into a space width wide
+fn padCenterValue(
+    writer: *Io.Writer,
+    value: []const u8,
+    width: usize
+) !void {
+    const pad = width - value.len;
+    const lpad = @divFloor(pad, 2);
+    const rpad = pad - lpad;
+
+    try writePad(writer, lpad);
+    try writer.writeAll(value);
+    try writePad(writer, rpad);
+}
+
+/// Write a string as left-justified into a space width wide
+fn padLeftJustValue(
+    writer: *Io.Writer,
+    value: []const u8,
+    width: usize
+) !void {
+    const pad = width - value.len;
+    const lpad = 1;
+    const rpad = pad - lpad;
+
+    try writePad(writer, lpad);
+    try writer.writeAll(value);
+    try writePad(writer, rpad);
+}
+
+/// Write a string as right-justified into a space width wide
+fn padRightJustValue(
+    writer: *Io.Writer,
+    value: []const u8,
+    width: usize
+) !void {
+    const pad = width - value.len;
+    const rpad = 1;
+    const lpad = pad - rpad;
+
+    try writePad(writer, lpad);
+    try writer.writeAll(value);
+    try writePad(writer, rpad);
 }
 

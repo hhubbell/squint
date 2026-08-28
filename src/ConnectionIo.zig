@@ -4,8 +4,7 @@ const adbc = @import("adbc");
 
 const mesg = @import("message.zig");
 const perf = @import("perf.zig");
-
-const TableWriter = @import("render/TableWriter.zig");
+const rndr = @import("render/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -130,49 +129,36 @@ pub fn execute(
         return e;
     };
 
-
-    // -----
-    //
-    // 
-
-    //const bufsz = TableWriter.calcMaxWidth(self.last_result.metadata.?);
-    //var colbuf = try gpa.alloc(u8, bufsz);
-
-    //self.pmon.proc = self.pmon.lap(io);
-
-    //var writer = io.
-    //try TableWriter.write(&prntbuf, &self.last_result);
-
-    //self.pmon.rend = self.pmon.lap(io);
-
-    //return prntbuf;
-    //
-    // -----
-
-
     self.pmon.load = self.pmon.lap(io);
 
     // TODO move this to a new TableStreamBuffer interface
     self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result.buffer);
     self.pmon.rows = self.last_result.countRows();
 
-//    const bufsz = TableWriter.calcResultBufSize(
-//        self.last_result.metadata.?,
-//        self.pmon.rows);
-
     self.pmon.proc = self.pmon.lap(io);
+}
 
-//    var prntbuf = try gpa.alloc(u8, bufsz);
+/// Deprecated
+///
+/// This is unnecessary as `pmon.rend` is no longer meaningful when we
+/// stream our writes. Keeping as a reminder if needed in the future.
+pub fn render(self: *Self, io: Io, gpa: Allocator, tw: rndr.TableWriter) !void {
+    // Reset the lap timer in case it has been a been a while
+    _ = self.pmon.lap(io);
 
-    // Write the ArrowStream result set to the allocated print buffer. By
-    // calculating the required buffer size ahead of time, instead of
-    // dynamically allocating to build the string at print time, we save
-    // a substantial amount of time rendering.
-//    try TableWriter.write(&prntbuf, &self.last_result);
+    // WARNING: 
+    //  When we close our pager without reading the full result set, less
+    //  will attempt to issue a SIGPIPE which terminates the parent process.
+    //  We are ignoring these signals. As a result, incomplete reading of
+    //  inputs results in a WriteFailed error due to a broken pipe. In this
+    //  case, we are just ignoring the error and returning.
+    tw.write(gpa, &self.last_result) catch |err| {
+        if (err != error.WriteFailed) {
+            return err;
+        }
+    };
 
-//    self.pmon.rend = self.pmon.lap(io);
-
-//    return prntbuf;
+    self.pmon.rend = self.pmon.lap(io);
 }
 
 /// If an error already exists, free it before returning a fresh AdbcError.
