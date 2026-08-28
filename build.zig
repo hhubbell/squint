@@ -213,7 +213,7 @@ fn addCSourceFileGlob(
 
     var dir = std.Io.Dir.cwd().openDir(b.graph.io, path, .{ .iterate = true }) catch {
         std.debug.print("Failed to open C source directory: {s}\n", .{path});
-        return;
+        @panic("Failed to open C source directory");
     };
     defer dir.close(b.graph.io);
 
