@@ -11,7 +11,7 @@ pub const Color = @import("Color.zig");
 pub const Shape = @import("Shape.zig");
 
 const CsvWriter = @import("CsvWriter.zig");
-const FixedBufferTableWriter = @import("TableWriter.zig");
+const FixedBufferTableWriter = @import("FixedBufferTableWriter.zig");
 const StreamingTableWriter = @import("StreamingTableWriter.zig");
 
 
