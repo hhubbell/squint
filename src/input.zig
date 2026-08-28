@@ -6,14 +6,13 @@ const parser = @import("parser");
 const editor = @import("editor.zig");
 const mesg = @import("message.zig");
 const pager = @import("pager.zig");
+const render = @import("render/root.zig");
 
-const Box = @import("render/TableWriter.zig").Box;
 const ConnectionCatalog = @import("ConnectionCatalog.zig");
 const ConnectionIo = @import("ConnectionIo.zig");
 const Color = @import("render/Color.zig");
-const CsvWriter = @import("render/CsvWriter.zig");
+const Shape = @import("render/Shape.zig");
 const State = @import("State.zig");
-const TableWriter = @import("render/TableWriter.zig");
 
 const Allocator = std.mem.Allocator;
 const Dir = std.Io.Dir;
@@ -58,6 +57,11 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
     .{ ".exit", DotCommand {
         .help = "Exit the program",
         .call = dcExit }},
+    .{ ".format", DotCommand {
+        // FIXME: I can generate this help message dynamically at comptime
+        // based on known formatting options
+        .help = "Set the output formatter to [ftable|table|csv]",
+        .call = dcFormat }},
     .{ ".help", DotCommand {
         .help = "Print this friendly help message",
         .call = dcHelp }},
@@ -150,11 +154,11 @@ fn treeLine(
     color: ?[]const u8,
     term: bool
 ) !void {
-    const shape = if (term) Box.LBotCor else Box.LJunc;
+    const shape = if (term) Shape.Box.LBotCor else Shape.Box.LJunc;
 
     for (0..depth * 4) |i| {
         if (i % 4 == 0) {
-            _ = try writer.write(Box.VertSep);
+            _ = try writer.write(Shape.Box.VertSep);
         } else {
             _ = try writer.writeByte(' ');
         }
@@ -162,11 +166,11 @@ fn treeLine(
 
     if (color) |clr| {
         try writer.print("{s}{s}{s} {s}{s}{s}\n", .{
-            shape, Box.HorizSep, Box.HorizSep, clr, val, Color.Reset
+            shape, Shape.Box.HorizSep, Shape.Box.HorizSep, clr, val, Color.Reset
         });
     } else {
         try writer.print("{s}{s}{s} {s}\n", .{
-            shape, Box.HorizSep, Box.HorizSep, val
+            shape, Shape.Box.HorizSep, Shape.Box.HorizSep, val
         });
     }
 }
@@ -220,6 +224,20 @@ fn dcExit(args: *TokenIter, opts: DotCommandOptions) !void {
     _ = opts;
 
     std.process.exit(0);
+}
+
+fn dcFormat(args: *TokenIter, opts: DotCommandOptions) !void {
+    const sel: []const u8 = args.next() orelse {
+        opts.msg.addErr("Invalid .format invocation. "
+            ++ "Call .format [ftable|table|csv]", .{});
+        return error.DotCommandError;
+    };
+
+    opts.state.tbl_writer = std.meta.stringToEnum(render.WriterType, sel) orelse {
+        opts.msg.addErr("Invalid .format invocation. "
+            ++ "Call .format [ftable|table|csv]", .{});
+        return error.DotCommandError;
+    };
 }
 
 fn dcHelp(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -302,12 +320,11 @@ fn dcSave(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer: Io.File.Writer = file.writer(opts.io, &buffer);
 
-    CsvWriter.write(&writer.interface, opts.gpa, &opts.state.conn.last_result) catch |e| {
+    const tw: render.TableWriter = render.fromWriterType(.csv, &writer.interface);
+    tw.write(opts.gpa, &opts.state.conn.last_result) catch |e| {
         opts.msg.addErr(".save failed: {s}", .{@errorName(e)});
         return error.DotCommandError;
     };
-
-    try writer.interface.flush();
 }
 
 fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -355,17 +372,32 @@ pub fn execStatement(
     // Clear the prior result set
     state.conn.clear(gpa);
 
-    const prntbuf = state.conn.execute(io, gpa, msg, query) catch {
+    state.conn.execute(io, gpa, msg, query) catch {
         return error.ExecutionError;
     };
-    defer gpa.free(prntbuf);
 
-    var source: Io.Reader = .fixed(prntbuf);
+    var outbuf: [4096]u8 = undefined;
+    var sink: pager.Pager = try pager.page(io, state.page, &outbuf);
 
-    try pager.page(io, state.page, &source);
+    const tw: render.TableWriter = render.fromWriterType(
+        state.tbl_writer,
+        &sink.writer.interface);
+
+    // WARNING: 
+    //  When we close our pager without reading the full result set, less
+    //  will attempt to issue a SIGPIPE which terminates the parent process.
+    //  We are ignoring these signals. As a result, incomplete reading of
+    //  inputs results in a WriteFailed error due to a broken pipe. In this
+    //  case, we are just ignoring the error and returning.
+    tw.write(gpa, &state.conn.last_result) catch |err| {
+        if (err != error.WriteFailed) {
+            return err;
+        }
+    };
+
+    try sink.close(io);
 
     // Diagnostics
-    var outbuf: [4096]u8 = undefined;
     var stderr: Io.File.Writer = Io.File.stderr().writer(io, &outbuf);
     try stderr.interface.print("{f}\n", .{ state.conn.pmon });
     try stderr.interface.flush();
