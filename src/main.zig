@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
         const query: [*c]u8 = input.readline(prompt);
         defer std.c.free(query);
 
-        switch (input.inputType(query)) {
+        switch (input.inputType(gpa, query)) {
             .blank,
             .canceled => {
                 prompt = @constCast("> \x00");
@@ -88,7 +88,6 @@ pub fn main(init: std.process.Init) !void {
                 const qstr: [:0]const u8 = try input.active_query.asStringZ(gpa);
                 defer gpa.free(qstr);
 
-                _ = input.addHistory(qstr);
                 input.active_query.clear(gpa);
 
                 input.execStatements(io, gpa, &state, &msg, qstr) catch {

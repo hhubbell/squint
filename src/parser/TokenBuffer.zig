@@ -103,3 +103,12 @@ pub fn lastTokenNonWs(self: Self) Token {
         return self.items[i];
     }
 }
+
+pub fn printTokens(self: Self) void {
+    for (self.items, 0..) |tok, i| {
+        // Use writer, but whatever, this is for debugging only really
+        std.debug.print("{d}: [{s}] {s}\n",
+            .{i, @tagName(tok.kind), self.tokenString(tok)}
+        );
+    }
+}

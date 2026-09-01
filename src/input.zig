@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const adbc = @import("adbc");
 const c = @import("c");
 const parser = @import("parser");
@@ -353,7 +354,7 @@ pub fn sourceFile(
     defer file.close(io);
 
     const fsize = try file.length(io);
-    const buffer: []u8 = try gpa.alloc(u8, fsize);
+    const buffer: [:0]u8 = try gpa.allocSentinel(u8, fsize, 0);
     defer gpa.free(buffer);
 
     var reader: Io.File.Reader = file.reader(io, buffer);
@@ -362,7 +363,50 @@ pub fn sourceFile(
     try execStatements(io, gpa, state, msg, buffer);
 }
 
-pub fn execStatement(
+/// This is a wrapper for execTokenBuffer which takes an arbitrary query string
+/// containing one or many sql queries, and parses it into a token buffer as a
+/// first step. This API is available for uses where the input has not already
+/// been parsed into a token buffer.
+pub fn execStatements(
+    io: Io,
+    gpa: Allocator,
+    state: *State,
+    msg: *mesg.MessageBuffer,
+    query: [:0]const u8
+) !void {
+    // Memorialize the input
+    _ = addHistory(query);
+
+    var stmts: parser.TokenBuffer = try parser.FastScan.scan(gpa, query);
+    defer stmts.deinit(gpa);
+
+    try execTokenBuffer(io, gpa, state, msg, &stmts);
+}
+
+/// Given a TokenBuffer result from a Scanner's .scan(), execute one or many
+/// sql queries that are reconstituted from the TokenBuffer, and print the
+/// results.
+pub fn execTokenBuffer(
+    io: Io,
+    gpa: Allocator,
+    state: *State,
+    msg: *mesg.MessageBuffer,
+    toks: *parser.TokenBuffer
+) !void {
+    const stmts: []parser.TokenBuffer = try toks.split(gpa);
+    defer gpa.free(stmts);
+
+    for (stmts) |stmt| {
+        const qstr: [:0]const u8 = try stmt.asStringZ(gpa);
+        defer gpa.free(qstr);
+
+        try execStatementPrint(io, gpa, state, msg, qstr);
+    }
+}
+
+/// Execute one sql query and print the result to the pager. Print performance
+/// data to stderr.
+fn execStatementPrint(
     io: Io,
     gpa: Allocator,
     state: *State,
@@ -403,32 +447,12 @@ pub fn execStatement(
     try stderr.interface.flush();
 }
 
-pub fn execStatements(
-    io: Io,
-    gpa: Allocator,
-    state: *State,
-    msg: *mesg.MessageBuffer,
-    query: []const u8
-) !void {
-    var stmts: parser.TokenBuffer = try parser.FastScan.scan(gpa, query);
-    defer stmts.deinit(gpa);
-    
-    const stmt_lst: []parser.TokenBuffer = try stmts.split(gpa);
-    defer gpa.free(stmt_lst);
-
-    for (stmt_lst) |stmt| {
-        const qstr: [:0]const u8 = try stmt.asStringZ(gpa);
-        defer gpa.free(qstr);
-
-        try execStatement(io, gpa, state, msg, qstr);
-    }
-}
 
 const InputType = enum {
     blank, canceled, continued, dot, execute, exit
 };
 
-pub fn inputType(query: [*c]u8) InputType {
+pub fn inputType(gpa: Allocator, query: [*c]u8) InputType {
     // A Null value here indicates a ctrl-c or ctrl-d keypress. If ctrl-c,
     // then reset and continue. Otherwise exit the main loop.
     if (query == null) {
@@ -437,6 +461,11 @@ pub fn inputType(query: [*c]u8) InputType {
         } else {
             return .exit;
         }
+    }
+
+    // For debugging purposes, print the input given verbatim
+    if (builtin.mode == .debug) {
+        std.debug.print("{s}\n", .{query});
     }
 
     const query_len = std.mem.len(query);
@@ -451,9 +480,22 @@ pub fn inputType(query: [*c]u8) InputType {
         return .dot;
     }
 
+    // At this point, the input from the user (if valid) is a full sql query
+    // or part of a full query. Scan the query to determine more confidently
+    // if it is semicolon terminated.
+    var inpt: parser.TokenBuffer = parser.FastScan.scan(gpa, std.mem.span(query)) catch {
+        // If scanning failed we just quit from here, which isn't ideal long
+        // term, but there's not really anything useful we can do if this
+        // fails. It's likely an OOM error anyway.
+        return .exit;
+    };
+    // FIXME: Ideally we store this already partially scanned input in InputQuery
+    // instead of having to re-scan during exec. So this is temporary.
+    defer inpt.deinit(gpa);
+
     // If the user entered a string that is not semicolon terminated,
     // mark the input as continued
-    if (query[query_len - 1] != ';') {
+    if (!inpt.lastTokenNonWs().is(.SEMICOLON)) {
         return .continued;
     }
 

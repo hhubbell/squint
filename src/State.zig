@@ -81,7 +81,10 @@ pub fn init(
     };
 
     if (argp.get("exec")) |cmd| {
-        try input.execStatements(io, gpa, &state, msg, cmd);
+        const cmdz = try gpa.dupeSentinel(u8, cmd, 0);
+        defer gpa.free(cmdz);
+
+        try input.execStatements(io, gpa, &state, msg, cmdz);
 
         if (argp.get("interactive") == null) {
             state.mode = .quit;
