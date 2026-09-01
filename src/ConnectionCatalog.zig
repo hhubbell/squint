@@ -20,8 +20,20 @@ pub const Catalog = struct {
     children: []Schema,
 
     pub fn deinit(self: *@This(), gpa: Allocator) void {
+        self.clearDeep(gpa);
+        self.clearShallow(gpa);
+    }
+
+    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
         for (self.children) |*s| s.deinit(gpa);
+    }
+
+    /// Really dislike this, but we need a way to clear the
+    /// children and name slices without freeing any underlying
+    /// trees, in case other objects have references
+    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
         gpa.free(self.children);
+        gpa.free(self.name);
     }
 };
 
@@ -30,8 +42,20 @@ pub const Schema = struct {
     children: []Table,
 
     pub fn deinit(self: *@This(), gpa: Allocator) void {
+        self.clearDeep(gpa);
+        self.clearShallow(gpa);
+    }
+
+    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
         for (self.children) |*s| s.deinit(gpa);
+    }
+
+    /// Really dislike this, but we need a way to clear the
+    /// children and name slices without freeing any underlying
+    /// trees, in case other objects have references
+    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
         gpa.free(self.children);
+        gpa.free(self.name);
     }
 };
 
@@ -40,12 +64,29 @@ pub const Table = struct {
     children: []Column,
 
     pub fn deinit(self: *@This(), gpa: Allocator) void {
+        self.clearDeep(gpa);
+        self.clearShallow(gpa);
+    }
+
+    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
+        for (self.children) |*s| s.deinit(gpa);
+    }
+
+    /// Really dislike this, but we need a way to clear the
+    /// children and name slices without freeing any underlying
+    /// trees, in case other objects have references
+    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
         gpa.free(self.children);
+        gpa.free(self.name);
     }
 };
 
 pub const Column = struct {
-    name: []const u8
+    name: []const u8,
+
+    pub fn deinit(self: *@This(), gpa: Allocator) void {
+        gpa.free(self.name);
+    }
 };
 
 const RefreshHandler = *const fn (s: *Self, g: Allocator, c: *ConnectionIo) anyerror!void;
@@ -100,48 +141,43 @@ pub fn read(
 ) ![]Catalog {
     var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
 
-    const f_cat: [*c]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_sch: [*c]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_tab: [*c]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_cat: ?[:0]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_sch: ?[:0]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_tab: ?[:0]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
 
     defer {
-        if (f_cat) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_sch) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_cat) |f| gpa.free(f);
+        if (f_sch) |f| gpa.free(f);
+        if (f_tab) |f| gpa.free(f);
     }
 
     try adbc.err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
-        f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
+        @ptrCast(f_cat),
+        @ptrCast(f_sch),
+        @ptrCast(f_tab),
+        null, null,
+        &stream,
+        conn.errPtr()
+    ));
     defer if (stream.release) |release| release(&stream);
 
-    const getSchema = stream.get_schema orelse return error.AdbcLibError;
-    const getNext = stream.get_next orelse return error.AdbcLibError;
+    var res: adbc.TableBuffer = try .init(gpa, 16);
+    defer res.deinit(gpa);
 
-    var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
-
-    try adbc.err.checkNanoArrowStream(getSchema(&stream, &schema));
-
-    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-
-    try adbc.err.checkNanoArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
+    try adbc.readStream(gpa, &stream, &res.buffer);
 
     var obj: std.ArrayList(Catalog) = .empty;
     defer obj.deinit(gpa);
 
-    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(&stream, &batch) == 0) {
-        if (batch.release == null) break;
-
-        try adbc.err.checkNanoArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
-        const content = try readCatalogArrayList(
-            Catalog,
+    // Would be nice to use the Iterator here but we need to implement
+    // an iterator that returns a range slot across a row
+    for (0..res.countBatches()) |i| {
+        var view = try res.asArrayView(i);
+        const content = try readCatalogArrayList(Catalog,
             gpa, &view, 0, view.length);
         defer gpa.free(content);
 
         try obj.appendSlice(gpa, content);
-
-        //batch.release.?(&batch);
     }
  
     return obj.toOwnedSlice(gpa);
@@ -173,7 +209,6 @@ fn refreshSchemaList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
         c.ADBC_OBJECT_DEPTH_DB_SCHEMAS,
         .{ .catalog = self.items[cat_i].name });
     defer gpa.free(objs);
-    defer for (objs) |*obj| obj.deinit(gpa);
 
     if (objs.len > 0) {
         // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
@@ -210,12 +245,8 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
             .schema = self.items[cat_i].children[sch_i].name
         });
     defer gpa.free(objs);
-    defer for (objs) |*obj| obj.deinit(gpa);
 
-    if (
-        objs.len > 0
-        and objs[0].children.len > 0
-    ) {
+    if (objs.len > 0) {
         try insertSlice(Schema, gpa,
             &self.items[cat_i].children[sch_i],
             objs[0].children[0].children);
@@ -468,31 +499,36 @@ pub fn readCatalogArrayList(
     var obj: std.ArrayList(T) = .empty;
     defer obj.deinit(gpa);
 
+    const name_col = list.children[0];
+    const data_col = list.children[1];
+
     // FIXME: Must also support list.storage_type LARGE_LIST -> as_int64
-    const offsets = list.children[1].*.buffer_views[1].data.as_int32;
+    const offsets = data_col.*.buffer_views[1].data.as_int32;
 
     for (@intCast(beg)..@intCast(end)) |i| {
-        const name_val = c.ArrowArrayViewGetStringUnsafe(
-            list.children[0],
-            @intCast(i));
-        const name_len: usize = @intCast(name_val.size_bytes);
-        const name_str: []const u8 = if (name_len > 0) name_val.data[0..name_len]
-            else "none";
+        if (list.n_children == 0) continue;
 
-        if (list.n_children == 0) {
-            continue;
-        }
+        const name_val = c.ArrowArrayViewGetStringUnsafe(name_col, @intCast(i));
+        const name_len: usize = @intCast(name_val.size_bytes);
+
+        // FIXME: This could be cleaned up further but it's ok for now. It bugs
+        // me that we have to dupe a string literal to make freeing easier. I
+        // seem to hit this occasionally and don't know what the right paradigm
+        // is to handle these types of fallback scenarios. Is it a null instead?
+        const name_str: []const u8 = if (name_len > 0) blk: {
+            break :blk try gpa.dupe(u8, name_val.data[0..name_len]);
+        } else blk: {
+            break :blk try gpa.dupe(u8, "none");
+        };
 
         if (@hasField(T, "children")) {
-            const next_list: *c.ArrowArrayView = list.children[1];
-
-            if (next_list.n_children == 0) {
+            if (data_col.*.n_children == 0) {
                 try obj.append(gpa, T{.name = name_str, .children = &.{}});
                 continue;
             }
 
             const next_t: type = @typeInfo(@FieldType(T, "children")).pointer.child;
-            const next_children = next_list.*.children[0];
+            const next_children = data_col.*.children[0];
 
             const children: []next_t = try readCatalogArrayList(
                 next_t,
@@ -510,11 +546,6 @@ pub fn readCatalogArrayList(
     return try obj.toOwnedSlice(gpa);
 }
 
-// Checks if an item of a  catalog type exists in the connection catalog
-fn existsInCatalog(comptime T: type, needle: T, haystack: []T) bool {
-    return indexInCatalog(T, needle, haystack) >= 0;
-}
-
 fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
     for (haystack, 0..) |hay, i| {
         if (std.mem.eql(u8, needle.name, hay.name)) return @intCast(i);
@@ -523,7 +554,7 @@ fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
     return -1;
 }
 
-pub fn insertSlice(
+fn insertSlice(
     comptime T: type,
     gpa: Allocator,
     obj: *T,
@@ -532,43 +563,9 @@ pub fn insertSlice(
     // Is this necessary if the function signature mandates children's type?
     assert(@hasField(T, "children"));
 
-    // FIXME: Can we optimize this?
-
-    const ex_len: usize = obj.children.len;
-    const child_T: type = @typeInfo(@FieldType(T, "children")).pointer.child;
-
-    // First check the possible number of NEW children so we can realloc
-    // our children buffer
-    var counter: usize = 0;
-    for (children) |child| {
-        counter += @intFromBool(!existsInCatalog(
-            child_T,
-            child,
-            obj.children));
-    }
-
-    if (counter > 0) {
-        obj.children = try gpa.realloc(
-            obj.children,
-            obj.children.len + counter
-        );
-
-        const new_len: usize = obj.children.len;
-        for (ex_len..new_len) |i| {
-            obj.children[i] = std.mem.zeroInit(child_T, .{});
-        }
-    }
-
-    var open_block: usize = ex_len;
-    for (children) |child| {
-        const i: i64 = indexInCatalog(child_T, child, obj.children);
-
-        if (i < 0) {
-            obj.children[open_block] = child;
-            open_block += 1;
-        } else {
-            //gpa.free(obj.children[@intCast(i)]);
-            obj.children[@intCast(i)] = child;
-        }
-    }
+    // We've already allocated a slice for `children`. The most simple thing
+    // to do is swap out obj's children with the new set, rather than trying
+    // to identify the deltas and insert new values only.
+    obj.clearDeep(gpa);
+    obj.children = children;
 }
