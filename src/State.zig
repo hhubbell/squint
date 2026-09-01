@@ -93,7 +93,10 @@ pub fn init(
     }
 
     if (argp.get("source")) |path| {
-        try input.sourceFile(io, gpa, &state, msg, path);
+        const buffer: [:0]const u8 = try input.readFile(io, gpa, msg, path);
+        defer gpa.free(buffer);
+
+        try input.execStatements(io, gpa, &state, msg, buffer);
 
         if (argp.get("interactive") == null) {
             state.mode = .quit;

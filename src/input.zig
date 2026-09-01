@@ -210,7 +210,17 @@ fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
 
     try editor.edit(opts.io, opts.state.edit.?, editor.tmp_buffer);
 
-    try sourceFile(opts.io, opts.gpa, opts.state, opts.msg, editor.tmp_buffer);
+    const ed_buf: [:0]const u8 = try readFile(
+        opts.io,
+        opts.gpa,
+        opts.msg,
+        editor.tmp_buffer);
+    defer opts.gpa.free(ed_buf);
+
+    // Memorialize the input
+    _ = addHistory(ed_buf);
+
+    try execStatements(opts.io, opts.gpa, opts.state, opts.msg, ed_buf);
 }
 
 fn dcErrors(args: *TokenIter, opts: DotCommandOptions) !void {
@@ -334,16 +344,18 @@ fn dcSource(args: *TokenIter, opts: DotCommandOptions) !void {
         return error.DotCommandError;
     };
 
-    try sourceFile(opts.io, opts.gpa, opts.state, opts.msg, fname);
+    const buffer: [:0]const u8 = try readFile(opts.io, opts.gpa, opts.msg, fname);
+    defer opts.gpa.free(buffer);
+
+    try execStatements(opts.io, opts.gpa, opts.state, opts.msg, buffer);
 }
 
-pub fn sourceFile(
+pub fn readFile(
     io: Io,
     gpa: Allocator,
-    state: *State,
     msg: *mesg.MessageBuffer,
     path: []const u8
-) !void {
+) ![:0]const u8 {
     const file = Dir.cwd().openFile(io, path, .{}) catch {
         msg.addErr(
             "Cannot access '{s}': No such file or directory",
@@ -355,12 +367,11 @@ pub fn sourceFile(
 
     const fsize = try file.length(io);
     const buffer: [:0]u8 = try gpa.allocSentinel(u8, fsize, 0);
-    defer gpa.free(buffer);
 
     var reader: Io.File.Reader = file.reader(io, buffer);
     try reader.interface.readSliceAll(buffer);
 
-    try execStatements(io, gpa, state, msg, buffer);
+    return buffer;
 }
 
 /// This is a wrapper for execTokenBuffer which takes an arbitrary query string
@@ -374,9 +385,6 @@ pub fn execStatements(
     msg: *mesg.MessageBuffer,
     query: [:0]const u8
 ) !void {
-    // Memorialize the input
-    _ = addHistory(query);
-
     var stmts: parser.TokenBuffer = try parser.FastScan.scan(gpa, query);
     defer stmts.deinit(gpa);
 
