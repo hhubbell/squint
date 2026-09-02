@@ -115,67 +115,41 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stderr().writer(opts.io, &buffer);
 
-    const cats = catalog.catalogs();
-    for (cats, 0..) |obj, i| {
-        try treeLine(
-            &writer.interface,
-            obj.name,
-            0, 
-            if (i == catalog.current_database) Color.Yellow else null,
-            i == cats.len - 1
-        );
-
-        for (obj.children, 0..) |sch, j| {
-            try treeLine(
-                &writer.interface,
-                sch.name,
-                1, 
-                if (j == catalog.current_schema) Color.Yellow else null,
-                j == obj.children.len - 1
-            );
-
-            for (sch.children, 0..) |tab, k| {
-                try treeLine(
-                    &writer.interface,
-                    tab.name,
-                    2, 
-                    null,
-                    k == sch.children.len - 1
-                );
-            }
-        }
-    }
+    try treeLine(&writer.interface, opts.gpa, catalog.catalogs(), "");
     try writer.interface.flush();
 }
 
 fn treeLine(
     writer: *Io.Writer,
-    val: []const u8,
-    depth: usize,
-    color: ?[]const u8,
-    term: bool
+    gpa: Allocator,
+    nodes: []ConnectionCatalog.Node,
+    leader: []const u8
 ) !void {
-    const shape = if (term) Shape.Box.LBotCor else Shape.Box.LJunc;
+    for (nodes, 0..) |node, i| {
+        const shape = if (i == nodes.len - 1) Shape.Box.LBotCor else Shape.Box.LJunc;
 
-    for (0..depth * 4) |i| {
-        if (i % 4 == 0) {
-            _ = try writer.write(Shape.Box.VertSep);
+        const color:?[]const u8 = null;
+        if (color) |clr| {
+            try writer.print("{s}{s}{s} {s}{s}{s}\n", .{
+                leader, shape, Shape.Tree.Leaf, clr, node.name, Color.Reset
+            });
         } else {
-            _ = try writer.writeByte(' ');
+            try writer.print("{s}{s}{s} {s}\n", .{
+                leader, shape, Shape.Tree.Leaf, node.name
+            });
+        }
+
+        if (node.children.len > 0) {
+            const nextl = try std.mem.concat(gpa, u8, &.{
+                leader,
+                if (i == nodes.len - 1) Shape.Tree.Blank else Shape.Tree.Branch
+            });
+            defer gpa.free(nextl);
+
+            try treeLine(writer, gpa, node.children, nextl);
         }
     }
-
-    if (color) |clr| {
-        try writer.print("{s}{s}{s} {s}{s}{s}\n", .{
-            shape, Shape.Box.HorizSep, Shape.Box.HorizSep, clr, val, Color.Reset
-        });
-    } else {
-        try writer.print("{s}{s}{s} {s}\n", .{
-            shape, Shape.Box.HorizSep, Shape.Box.HorizSep, val
-        });
-    }
 }
-
 
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
     const input: []const u8 = args.rest();
@@ -613,7 +587,7 @@ pub fn completionCallback(buf: [*c]const u8, compl: [*c]Completions) callconv(.c
     // Case: We just passed a token which indicates a special behavior: the
     // next completion should be an object from the database catalog.
     if (expectObjectNext(ctx)) {
-        const objects: []ConnectionCatalog.Table = catalog.currentConnTables() catch return;
+        const objects: []ConnectionCatalog.Node = catalog.currentConnTables() catch return;
         const indexes: []usize = gpa.alloc(usize, objects.len) catch return;
         defer gpa.free(indexes);
 

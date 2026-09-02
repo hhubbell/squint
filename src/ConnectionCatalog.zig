@@ -15,76 +15,13 @@ pub const Filter = struct {
     table: ?[]const u8 = null
 };
 
-pub const Catalog = struct {
+pub const Node = struct {
     name: []const u8,
-    children: []Schema,
+    children: []Node,
 
     pub fn deinit(self: *@This(), gpa: Allocator) void {
-        self.clearDeep(gpa);
-        self.clearShallow(gpa);
-    }
-
-    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
         for (self.children) |*s| s.deinit(gpa);
-    }
-
-    /// Really dislike this, but we need a way to clear the
-    /// children and name slices without freeing any underlying
-    /// trees, in case other objects have references
-    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
         gpa.free(self.children);
-        gpa.free(self.name);
-    }
-};
-
-pub const Schema = struct {
-    name: []const u8,
-    children: []Table,
-
-    pub fn deinit(self: *@This(), gpa: Allocator) void {
-        self.clearDeep(gpa);
-        self.clearShallow(gpa);
-    }
-
-    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
-        for (self.children) |*s| s.deinit(gpa);
-    }
-
-    /// Really dislike this, but we need a way to clear the
-    /// children and name slices without freeing any underlying
-    /// trees, in case other objects have references
-    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
-        gpa.free(self.children);
-        gpa.free(self.name);
-    }
-};
-
-pub const Table = struct {
-    name: []const u8,
-    children: []Column,
-
-    pub fn deinit(self: *@This(), gpa: Allocator) void {
-        self.clearDeep(gpa);
-        self.clearShallow(gpa);
-    }
-
-    pub fn clearDeep(self: *@This(), gpa: Allocator) void {
-        for (self.children) |*s| s.deinit(gpa);
-    }
-
-    /// Really dislike this, but we need a way to clear the
-    /// children and name slices without freeing any underlying
-    /// trees, in case other objects have references
-    pub fn clearShallow(self: *@This(), gpa: Allocator) void {
-        gpa.free(self.children);
-        gpa.free(self.name);
-    }
-};
-
-pub const Column = struct {
-    name: []const u8,
-
-    pub fn deinit(self: *@This(), gpa: Allocator) void {
         gpa.free(self.name);
     }
 };
@@ -104,7 +41,7 @@ pub const empty: Self = .{
 };
 
 
-items: []Catalog,
+items: []Node,
 current_database: i64,
 current_schema: i64,
 
@@ -138,9 +75,7 @@ pub fn read(
     conn: *ConnectionIo,
     depth: c_int,
     filter: Filter
-) ![]Catalog {
-    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-
+) ![]Node {
     const f_cat: ?[:0]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
     const f_sch: ?[:0]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
     const f_tab: ?[:0]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
@@ -151,6 +86,7 @@ pub fn read(
         if (f_tab) |f| gpa.free(f);
     }
 
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
     try adbc.err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
         @ptrCast(f_cat),
         @ptrCast(f_sch),
@@ -166,15 +102,14 @@ pub fn read(
 
     try adbc.readStream(gpa, &stream, &res.buffer);
 
-    var obj: std.ArrayList(Catalog) = .empty;
+    var obj: std.ArrayList(Node) = .empty;
     defer obj.deinit(gpa);
 
     // Would be nice to use the Iterator here but we need to implement
     // an iterator that returns a range slot across a row
     for (0..res.countBatches()) |i| {
         var view = try res.asArrayView(i);
-        const content = try readCatalogArrayList(Catalog,
-            gpa, &view, 0, view.length);
+        const content = try readCatalogTree(gpa, &view, 0, view.length);
         defer gpa.free(content);
 
         try obj.appendSlice(gpa, content);
@@ -196,7 +131,7 @@ fn refreshCatalogIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     ) orelse return;
     defer gpa.free(opt);
 
-    self.current_database = indexInCatalog(Catalog,
+    self.current_database = indexInCatalog(Node,
         .{ .name = opt, .children = &.{} },
         self.items);
 }
@@ -213,7 +148,7 @@ fn refreshSchemaList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     if (objs.len > 0) {
         // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
         // ever get a many-catalog result, this will not behave as expected.
-        try insertSlice(Catalog, gpa, &self.items[cat_i], objs[0].children);
+        try insertSlice(Node, gpa, &self.items[cat_i], objs[0].children);
     }
 }
 
@@ -227,7 +162,7 @@ fn refreshSchemaIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     ) orelse return;
     defer gpa.free(opt);
 
-    self.current_schema = indexInCatalog(Schema,
+    self.current_schema = indexInCatalog(Node,
         .{ .name = opt, .children = &.{} },
         self.items[cat_i].children);
 }
@@ -247,7 +182,7 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     defer gpa.free(objs);
 
     if (objs.len > 0) {
-        try insertSlice(Schema, gpa,
+        try insertSlice(Node, gpa,
             &self.items[cat_i].children[sch_i],
             objs[0].children[0].children);
     }
@@ -289,7 +224,7 @@ fn refreshHandlerSqlite(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void 
     if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    self.current_schema = indexInCatalog(Schema,
+    self.current_schema = indexInCatalog(Node,
         .{ .name = "none", .children = &.{} },
         self.items[cat_i].children);
 }
@@ -344,7 +279,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     }
 
     if (catalog) |cat| {
-        self.current_database = indexInCatalog(Catalog,
+        self.current_database = indexInCatalog(Node,
             .{ .name = cat, .children = &.{} },
             self.items);
     }
@@ -394,7 +329,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     const cat_i: usize = @intCast(self.current_database);
 
     if (schema) |sch| {
-        self.current_schema = indexInCatalog(Schema,
+        self.current_schema = indexInCatalog(Node,
             .{ .name = sch, .children = &.{} },
             self.items[cat_i].children);
     }
@@ -403,7 +338,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
 }
 
 /// Return a slice of database catalogs
-pub fn catalogs(self: *Self) []Catalog {
+pub fn catalogs(self: *Self) []Node {
     return self.items;
 }
 
@@ -412,8 +347,8 @@ pub fn schemas(
     self: *Self,
     gpa: Allocator,
     filter: Self.Filter
-) ![]Schema {
-    var collector: std.ArrayList(Schema) = .empty;
+) ![]Node {
+    var collector: std.ArrayList(Node) = .empty;
     defer collector.deinit(gpa);
 
     for (self.catalogs()) |obj| {
@@ -437,8 +372,8 @@ pub fn tables(
     self: *Self,
     gpa: Allocator,
     filter: Self.Filter
-) ![]Table {
-    var collector: std.ArrayList(Table) = .empty;
+) ![]Node {
+    var collector: std.ArrayList(Node) = .empty;
     defer collector.deinit(gpa);
 
     const parents = try self.schemas(gpa, filter);
@@ -461,7 +396,7 @@ pub fn tables(
 
 /// Return a slice of database catalogs, based on the connection's
 /// current_catalog.
-pub fn currentConnCatalog(self: *Self) !Catalog {
+pub fn currentConnCatalog(self: *Self) !Node {
     if (self.current_database < 0) {
         return error.InvalidConnectionOption;
     }
@@ -471,33 +406,36 @@ pub fn currentConnCatalog(self: *Self) !Catalog {
 
 /// Return a slice of database schemas, based on the connection's
 /// current_db_schema.
-pub fn currentConnSchema(self: *Self) !Schema {
+pub fn currentConnSchema(self: *Self) !Node {
     if (self.current_schema < 0) {
         return error.InvalidConnectionOption;
     }
 
-    const parent: Catalog = try self.currentConnCatalog();
+    const parent: Node = try self.currentConnCatalog();
 
     return parent.children[@intCast(self.current_schema)];
 }
 
 /// Return a slice of database tables, based on the connection's
 /// current_catalog and current_db_schema.
-pub fn currentConnTables(self: *Self) ![]Table {
-    const parent: Schema = try self.currentConnSchema();
+pub fn currentConnTables(self: *Self) ![]Node {
+    const parent: Node = try self.currentConnSchema();
 
     return parent.children;
 }
 
-pub fn readCatalogArrayList(
-    comptime T: type,
+pub fn readCatalogTree(
     gpa: Allocator,
     list: *c.ArrowArrayView,
     beg: i64,
     end: i64
-) ![]T {
-    var obj: std.ArrayList(T) = .empty;
+) ![]Node {
+    var obj: std.ArrayList(Node) = .empty;
     defer obj.deinit(gpa);
+
+    if (list.n_children == 0) {
+        @panic("Why did I have this at one point?");
+    }
 
     const name_col = list.children[0];
     const data_col = list.children[1];
@@ -506,8 +444,6 @@ pub fn readCatalogArrayList(
     const offsets = data_col.*.buffer_views[1].data.as_int32;
 
     for (@intCast(beg)..@intCast(end)) |i| {
-        if (list.n_children == 0) continue;
-
         const name_val = c.ArrowArrayViewGetStringUnsafe(name_col, @intCast(i));
         const name_len: usize = @intCast(name_val.size_bytes);
 
@@ -521,25 +457,15 @@ pub fn readCatalogArrayList(
             break :blk try gpa.dupe(u8, "none");
         };
 
-        if (@hasField(T, "children")) {
-            if (data_col.*.n_children == 0) {
-                try obj.append(gpa, T{.name = name_str, .children = &.{}});
-                continue;
-            }
-
-            const next_t: type = @typeInfo(@FieldType(T, "children")).pointer.child;
-            const next_children = data_col.*.children[0];
-
-            const children: []next_t = try readCatalogArrayList(
-                next_t,
+        if (data_col.*.n_children == 0) {
+            try obj.append(gpa, Node{.name = name_str, .children = &.{}});
+        } else {
+            const children: []Node = try readCatalogTree(
                 gpa,
-                next_children,
+                data_col.*.children[0],
                 offsets[@intCast(i)],
                 offsets[@intCast(i + 1)]);
-
-            try obj.append(gpa, T{.name = name_str, .children = children});
-        } else {
-            try obj.append(gpa, T{.name = name_str});
+            try obj.append(gpa, Node{.name = name_str, .children = children});
         }
     }
 
@@ -566,6 +492,7 @@ fn insertSlice(
     // We've already allocated a slice for `children`. The most simple thing
     // to do is swap out obj's children with the new set, rather than trying
     // to identify the deltas and insert new values only.
-    obj.clearDeep(gpa);
+    _ = gpa;
+    //obj.clearDeep(gpa);
     obj.children = children;
 }
