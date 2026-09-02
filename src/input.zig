@@ -115,40 +115,13 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stderr().writer(opts.io, &buffer);
 
-    try treeLine(&writer.interface, opts.gpa, catalog.catalogs(), "");
+    try render.tree(
+        ConnectionCatalog.Node,
+        &writer.interface,
+        opts.gpa,
+        catalog.catalogs(),
+        "name", "children", "");
     try writer.interface.flush();
-}
-
-fn treeLine(
-    writer: *Io.Writer,
-    gpa: Allocator,
-    nodes: []ConnectionCatalog.Node,
-    leader: []const u8
-) !void {
-    for (nodes, 0..) |node, i| {
-        const shape = if (i == nodes.len - 1) Shape.Box.LBotCor else Shape.Box.LJunc;
-
-        const color:?[]const u8 = null;
-        if (color) |clr| {
-            try writer.print("{s}{s}{s} {s}{s}{s}\n", .{
-                leader, shape, Shape.Tree.Leaf, clr, node.name, Color.Reset
-            });
-        } else {
-            try writer.print("{s}{s}{s} {s}\n", .{
-                leader, shape, Shape.Tree.Leaf, node.name
-            });
-        }
-
-        if (node.children.len > 0) {
-            const nextl = try std.mem.concat(gpa, u8, &.{
-                leader,
-                if (i == nodes.len - 1) Shape.Tree.Blank else Shape.Tree.Branch
-            });
-            defer gpa.free(nextl);
-
-            try treeLine(writer, gpa, node.children, nextl);
-        }
-    }
 }
 
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
