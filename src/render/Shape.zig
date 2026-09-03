@@ -11,3 +11,9 @@ pub const Box = struct {
     pub const LBotCor: []const u8 = "\u{2514}";
     pub const RBotCor: []const u8 = "\u{2518}";
 };
+
+pub const Tree = struct {
+    pub const Blank: []const u8 = "    ";
+    pub const Branch: []const u8 = "\u{2502}   ";
+    pub const Leaf: []const u8 = "\u{2500}\u{2500}";
+};

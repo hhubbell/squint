@@ -15,37 +15,24 @@ pub const Filter = struct {
     table: ?[]const u8 = null
 };
 
-pub const Catalog = struct {
+pub const Node = struct {
     name: []const u8,
-    children: []Schema,
+    children: []Node,
 
     pub fn deinit(self: *@This(), gpa: Allocator) void {
         for (self.children) |*s| s.deinit(gpa);
         gpa.free(self.children);
+        gpa.free(self.name);
     }
-};
 
-pub const Schema = struct {
-    name: []const u8,
-    children: []Table,
+    pub fn clear(self: *@This(), gpa: Allocator, depth: usize) void {
+        gpa.free(self.name);
 
-    pub fn deinit(self: *@This(), gpa: Allocator) void {
-        for (self.children) |*s| s.deinit(gpa);
+        if (depth == 0) return;
+
+        for (self.children) |*s| s.clear(gpa, depth - 1);
         gpa.free(self.children);
     }
-};
-
-pub const Table = struct {
-    name: []const u8,
-    children: []Column,
-
-    pub fn deinit(self: *@This(), gpa: Allocator) void {
-        gpa.free(self.children);
-    }
-};
-
-pub const Column = struct {
-    name: []const u8
 };
 
 const RefreshHandler = *const fn (s: *Self, g: Allocator, c: *ConnectionIo) anyerror!void;
@@ -63,7 +50,7 @@ pub const empty: Self = .{
 };
 
 
-items: []Catalog,
+items: []Node,
 current_database: i64,
 current_schema: i64,
 
@@ -97,51 +84,47 @@ pub fn read(
     conn: *ConnectionIo,
     depth: c_int,
     filter: Filter
-) ![]Catalog {
-    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
-
-    const f_cat: [*c]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_sch: [*c]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
-    const f_tab: [*c]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+) ![]Node {
+    const f_cat: ?[:0]const u8 = if (filter.catalog) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_sch: ?[:0]const u8 = if (filter.schema) |f| try gpa.dupeSentinel(u8, f, 0) else null;
+    const f_tab: ?[:0]const u8 = if (filter.table) |f| try gpa.dupeSentinel(u8, f, 0) else null;
 
     defer {
-        if (f_cat) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_sch) |f| gpa.free(f[0..std.mem.len(f) + 1]);
-        if (f_tab) |f| gpa.free(f[0..std.mem.len(f) + 1]);
+        if (f_cat) |f| gpa.free(f);
+        if (f_sch) |f| gpa.free(f);
+        if (f_tab) |f| gpa.free(f);
     }
 
+    var stream: c.ArrowArrayStream = std.mem.zeroInit(c.ArrowArrayStream, .{});
     try adbc.err.checkAdbc(c.AdbcConnectionGetObjects(&conn.conn, depth,
-        f_cat, f_sch, f_tab, null, null, &stream, conn.errPtr()));
+        @ptrCast(f_cat),
+        @ptrCast(f_sch),
+        @ptrCast(f_tab),
+        null, null,
+        &stream,
+        conn.errPtr()
+    ));
     defer if (stream.release) |release| release(&stream);
 
-    const getSchema = stream.get_schema orelse return error.AdbcLibError;
-    const getNext = stream.get_next orelse return error.AdbcLibError;
+    var res: adbc.TableBuffer = try .init(gpa, 16);
+    defer res.deinit(gpa);
 
-    var schema: c.ArrowSchema = std.mem.zeroInit(c.ArrowSchema, .{});
+    try adbc.readStream(gpa, &stream, &res.buffer);
 
-    try adbc.err.checkNanoArrowStream(getSchema(&stream, &schema));
-
-    var a_err: c.ArrowError = std.mem.zeroInit(c.ArrowError, .{});
-    var view: c.ArrowArrayView = std.mem.zeroInit(c.ArrowArrayView, .{});
-
-    try adbc.err.checkNanoArrowStream(c.ArrowArrayViewInitFromSchema(&view, &schema, &a_err));
-
-    var obj: std.ArrayList(Catalog) = .empty;
+    var obj: std.ArrayList(Node) = .empty;
     defer obj.deinit(gpa);
 
-    var batch: c.ArrowArray = std.mem.zeroInit(c.ArrowArray, .{});
-    while (getNext(&stream, &batch) == 0) {
-        if (batch.release == null) break;
+    // Would be nice to use the Iterator here but we need to implement
+    // an iterator that returns a range slot across a row
+    for (0..res.countBatches()) |i| {
+        var view = try res.asArrayView(i);
 
-        try adbc.err.checkNanoArrowStream(c.ArrowArrayViewSetArray(&view, &batch, &a_err));   
-        const content = try readCatalogArrayList(
-            Catalog,
-            gpa, &view, 0, view.length);
-        defer gpa.free(content);
+        if (view.length > 0) {
+            const content = try readCatalogTree(gpa, &view, 0, view.length);
+            defer gpa.free(content);
 
-        try obj.appendSlice(gpa, content);
-
-        //batch.release.?(&batch);
+            try obj.appendSlice(gpa, content);
+        }
     }
  
     return obj.toOwnedSlice(gpa);
@@ -160,7 +143,7 @@ fn refreshCatalogIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     ) orelse return;
     defer gpa.free(opt);
 
-    self.current_database = indexInCatalog(Catalog,
+    self.current_database = indexInCatalog(Node,
         .{ .name = opt, .children = &.{} },
         self.items);
 }
@@ -173,12 +156,13 @@ fn refreshSchemaList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
         c.ADBC_OBJECT_DEPTH_DB_SCHEMAS,
         .{ .catalog = self.items[cat_i].name });
     defer gpa.free(objs);
-    defer for (objs) |*obj| obj.deinit(gpa);
+
+    for (objs) |*o| o.clear(gpa, 0);
 
     if (objs.len > 0) {
         // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
         // ever get a many-catalog result, this will not behave as expected.
-        try insertSlice(Catalog, gpa, &self.items[cat_i], objs[0].children);
+        try replaceChildItems(Node, gpa, &self.items[cat_i], objs[0].children);
     }
 }
 
@@ -192,7 +176,7 @@ fn refreshSchemaIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     ) orelse return;
     defer gpa.free(opt);
 
-    self.current_schema = indexInCatalog(Schema,
+    self.current_schema = indexInCatalog(Node,
         .{ .name = opt, .children = &.{} },
         self.items[cat_i].children);
 }
@@ -204,21 +188,20 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     const cat_i: usize = @intCast(self.current_database);
     const sch_i: usize = @intCast(self.current_schema);
 
-    const objs = try read(gpa, conn,
+    const tree = try read(gpa, conn,
         c.ADBC_OBJECT_DEPTH_TABLES,
         .{ .catalog = self.items[cat_i].name,
             .schema = self.items[cat_i].children[sch_i].name
         });
-    defer gpa.free(objs);
-    defer for (objs) |*obj| obj.deinit(gpa);
+    defer gpa.free(tree);
 
-    if (
-        objs.len > 0
-        and objs[0].children.len > 0
-    ) {
-        try insertSlice(Schema, gpa,
+    const objs = tree[0].children[0].children;
+    for (tree) |*t| t.clear(gpa, 1);
+
+    if (objs.len > 0) {
+        try replaceChildItems(Node, gpa,
             &self.items[cat_i].children[sch_i],
-            objs[0].children[0].children);
+            objs);
     }
 }
 
@@ -258,7 +241,7 @@ fn refreshHandlerSqlite(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void 
     if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    self.current_schema = indexInCatalog(Schema,
+    self.current_schema = indexInCatalog(Node,
         .{ .name = "none", .children = &.{} },
         self.items[cat_i].children);
 }
@@ -313,7 +296,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     }
 
     if (catalog) |cat| {
-        self.current_database = indexInCatalog(Catalog,
+        self.current_database = indexInCatalog(Node,
             .{ .name = cat, .children = &.{} },
             self.items);
     }
@@ -363,7 +346,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
     const cat_i: usize = @intCast(self.current_database);
 
     if (schema) |sch| {
-        self.current_schema = indexInCatalog(Schema,
+        self.current_schema = indexInCatalog(Node,
             .{ .name = sch, .children = &.{} },
             self.items[cat_i].children);
     }
@@ -372,7 +355,7 @@ fn refreshHandlerSnowflake(self: *Self, gpa: Allocator, conn: *ConnectionIo) !vo
 }
 
 /// Return a slice of database catalogs
-pub fn catalogs(self: *Self) []Catalog {
+pub fn catalogs(self: *Self) []Node {
     return self.items;
 }
 
@@ -381,8 +364,8 @@ pub fn schemas(
     self: *Self,
     gpa: Allocator,
     filter: Self.Filter
-) ![]Schema {
-    var collector: std.ArrayList(Schema) = .empty;
+) ![]Node {
+    var collector: std.ArrayList(Node) = .empty;
     defer collector.deinit(gpa);
 
     for (self.catalogs()) |obj| {
@@ -406,8 +389,8 @@ pub fn tables(
     self: *Self,
     gpa: Allocator,
     filter: Self.Filter
-) ![]Table {
-    var collector: std.ArrayList(Table) = .empty;
+) ![]Node {
+    var collector: std.ArrayList(Node) = .empty;
     defer collector.deinit(gpa);
 
     const parents = try self.schemas(gpa, filter);
@@ -430,7 +413,7 @@ pub fn tables(
 
 /// Return a slice of database catalogs, based on the connection's
 /// current_catalog.
-pub fn currentConnCatalog(self: *Self) !Catalog {
+pub fn currentConnCatalog(self: *Self) !Node {
     if (self.current_database < 0) {
         return error.InvalidConnectionOption;
     }
@@ -440,79 +423,75 @@ pub fn currentConnCatalog(self: *Self) !Catalog {
 
 /// Return a slice of database schemas, based on the connection's
 /// current_db_schema.
-pub fn currentConnSchema(self: *Self) !Schema {
+pub fn currentConnSchema(self: *Self) !Node {
     if (self.current_schema < 0) {
         return error.InvalidConnectionOption;
     }
 
-    const parent: Catalog = try self.currentConnCatalog();
+    const parent: Node = try self.currentConnCatalog();
 
     return parent.children[@intCast(self.current_schema)];
 }
 
 /// Return a slice of database tables, based on the connection's
 /// current_catalog and current_db_schema.
-pub fn currentConnTables(self: *Self) ![]Table {
-    const parent: Schema = try self.currentConnSchema();
+pub fn currentConnTables(self: *Self) ![]Node {
+    const parent: Node = try self.currentConnSchema();
 
     return parent.children;
 }
 
-pub fn readCatalogArrayList(
-    comptime T: type,
+pub fn readCatalogTree(
     gpa: Allocator,
     list: *c.ArrowArrayView,
     beg: i64,
     end: i64
-) ![]T {
-    var obj: std.ArrayList(T) = .empty;
+) ![]Node {
+    var obj: std.ArrayList(Node) = .empty;
     defer obj.deinit(gpa);
 
+    if (list.n_children == 0) {
+        @panic("Why did I have this at one point?");
+    }
+
+    const name_col = list.children[0];
+    const data_col = list.children[1];
+
     // FIXME: Must also support list.storage_type LARGE_LIST -> as_int64
-    const offsets = list.children[1].*.buffer_views[1].data.as_int32;
+    const offsets = data_col.*.buffer_views[1].data.as_int32;
 
     for (@intCast(beg)..@intCast(end)) |i| {
-        const name_val = c.ArrowArrayViewGetStringUnsafe(
-            list.children[0],
-            @intCast(i));
+        const name_val = c.ArrowArrayViewGetStringUnsafe(name_col, @intCast(i));
         const name_len: usize = @intCast(name_val.size_bytes);
-        const name_str: []const u8 = if (name_len > 0) name_val.data[0..name_len]
-            else "none";
 
-        if (list.n_children == 0) {
-            continue;
-        }
+        // FIXME: This could be cleaned up further but it's ok for now. It bugs
+        // me that we have to dupe a string literal to make freeing easier. I
+        // seem to hit this occasionally and don't know what the right paradigm
+        // is to handle these types of fallback scenarios. Is it a null instead?
+        const name_str: []const u8 = if (name_len > 0) blk: {
+            break :blk try gpa.dupe(u8, name_val.data[0..name_len]);
+        } else blk: {
+            break :blk try gpa.dupe(u8, "none");
+        };
 
-        if (@hasField(T, "children")) {
-            const next_list: *c.ArrowArrayView = list.children[1];
+        const c_beg = offsets[@intCast(i)];
+        const c_end = offsets[@intCast(i + 1)];
 
-            if (next_list.n_children == 0) {
-                try obj.append(gpa, T{.name = name_str, .children = &.{}});
-                continue;
-            }
-
-            const next_t: type = @typeInfo(@FieldType(T, "children")).pointer.child;
-            const next_children = next_list.*.children[0];
-
-            const children: []next_t = try readCatalogArrayList(
-                next_t,
-                gpa,
-                next_children,
-                offsets[@intCast(i)],
-                offsets[@intCast(i + 1)]);
-
-            try obj.append(gpa, T{.name = name_str, .children = children});
+        if (data_col.*.n_children == 0 or c_end <= c_beg) {
+            const node = Node{.name = name_str, .children = &.{}};
+            try obj.append(gpa, node);
         } else {
-            try obj.append(gpa, T{.name = name_str});
+            const children: []Node = try readCatalogTree(
+                gpa,
+                data_col.*.children[0],
+                c_beg,
+                c_end);
+            const node = Node{.name = name_str, .children = children};
+            try obj.append(gpa, node);
         }
     }
 
     return try obj.toOwnedSlice(gpa);
-}
-
-// Checks if an item of a  catalog type exists in the connection catalog
-fn existsInCatalog(comptime T: type, needle: T, haystack: []T) bool {
-    return indexInCatalog(T, needle, haystack) >= 0;
 }
 
 fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
@@ -523,7 +502,7 @@ fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
     return -1;
 }
 
-pub fn insertSlice(
+fn replaceChildItems(
     comptime T: type,
     gpa: Allocator,
     obj: *T,
@@ -532,43 +511,10 @@ pub fn insertSlice(
     // Is this necessary if the function signature mandates children's type?
     assert(@hasField(T, "children"));
 
-    // FIXME: Can we optimize this?
-
-    const ex_len: usize = obj.children.len;
-    const child_T: type = @typeInfo(@FieldType(T, "children")).pointer.child;
-
-    // First check the possible number of NEW children so we can realloc
-    // our children buffer
-    var counter: usize = 0;
-    for (children) |child| {
-        counter += @intFromBool(!existsInCatalog(
-            child_T,
-            child,
-            obj.children));
-    }
-
-    if (counter > 0) {
-        obj.children = try gpa.realloc(
-            obj.children,
-            obj.children.len + counter
-        );
-
-        const new_len: usize = obj.children.len;
-        for (ex_len..new_len) |i| {
-            obj.children[i] = std.mem.zeroInit(child_T, .{});
-        }
-    }
-
-    var open_block: usize = ex_len;
-    for (children) |child| {
-        const i: i64 = indexInCatalog(child_T, child, obj.children);
-
-        if (i < 0) {
-            obj.children[open_block] = child;
-            open_block += 1;
-        } else {
-            //gpa.free(obj.children[@intCast(i)]);
-            obj.children[@intCast(i)] = child;
-        }
-    }
+    // We've already allocated a slice for `children`. The most simple thing
+    // to do is swap out obj's children with the new set, rather than trying
+    // to identify the deltas and insert new values only.
+    for (obj.children) |*ch| ch.deinit(gpa);
+    gpa.free(obj.children);
+    obj.children = children;
 }
