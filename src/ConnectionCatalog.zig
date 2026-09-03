@@ -24,6 +24,15 @@ pub const Node = struct {
         gpa.free(self.children);
         gpa.free(self.name);
     }
+
+    pub fn clear(self: *@This(), gpa: Allocator, depth: usize) void {
+        gpa.free(self.name);
+
+        if (depth == 0) return;
+
+        for (self.children) |*s| s.clear(gpa, depth - 1);
+        gpa.free(self.children);
+    }
 };
 
 const RefreshHandler = *const fn (s: *Self, g: Allocator, c: *ConnectionIo) anyerror!void;
@@ -109,10 +118,13 @@ pub fn read(
     // an iterator that returns a range slot across a row
     for (0..res.countBatches()) |i| {
         var view = try res.asArrayView(i);
-        const content = try readCatalogTree(gpa, &view, 0, view.length);
-        defer gpa.free(content);
 
-        try obj.appendSlice(gpa, content);
+        if (view.length > 0) {
+            const content = try readCatalogTree(gpa, &view, 0, view.length);
+            defer gpa.free(content);
+
+            try obj.appendSlice(gpa, content);
+        }
     }
  
     return obj.toOwnedSlice(gpa);
@@ -145,10 +157,12 @@ fn refreshSchemaList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
         .{ .catalog = self.items[cat_i].name });
     defer gpa.free(objs);
 
+    for (objs) |*o| o.clear(gpa, 0);
+
     if (objs.len > 0) {
         // FIXME: This is fine if `schms` is always a slice of ONE catalog. If we
         // ever get a many-catalog result, this will not behave as expected.
-        try insertSlice(Node, gpa, &self.items[cat_i], objs[0].children);
+        try replaceChildItems(Node, gpa, &self.items[cat_i], objs[0].children);
     }
 }
 
@@ -174,17 +188,20 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     const cat_i: usize = @intCast(self.current_database);
     const sch_i: usize = @intCast(self.current_schema);
 
-    const objs = try read(gpa, conn,
+    const tree = try read(gpa, conn,
         c.ADBC_OBJECT_DEPTH_TABLES,
         .{ .catalog = self.items[cat_i].name,
             .schema = self.items[cat_i].children[sch_i].name
         });
-    defer gpa.free(objs);
+    defer gpa.free(tree);
+
+    const objs = tree[0].children[0].children;
+    for (tree) |*t| t.clear(gpa, 1);
 
     if (objs.len > 0) {
-        try insertSlice(Node, gpa,
+        try replaceChildItems(Node, gpa,
             &self.items[cat_i].children[sch_i],
-            objs[0].children[0].children);
+            objs);
     }
 }
 
@@ -457,15 +474,20 @@ pub fn readCatalogTree(
             break :blk try gpa.dupe(u8, "none");
         };
 
-        if (data_col.*.n_children == 0) {
-            try obj.append(gpa, Node{.name = name_str, .children = &.{}});
+        const c_beg = offsets[@intCast(i)];
+        const c_end = offsets[@intCast(i + 1)];
+
+        if (data_col.*.n_children == 0 or c_end <= c_beg) {
+            const node = Node{.name = name_str, .children = &.{}};
+            try obj.append(gpa, node);
         } else {
             const children: []Node = try readCatalogTree(
                 gpa,
                 data_col.*.children[0],
-                offsets[@intCast(i)],
-                offsets[@intCast(i + 1)]);
-            try obj.append(gpa, Node{.name = name_str, .children = children});
+                c_beg,
+                c_end);
+            const node = Node{.name = name_str, .children = children};
+            try obj.append(gpa, node);
         }
     }
 
@@ -480,7 +502,7 @@ fn indexInCatalog(comptime T: type, needle: T, haystack: []T) i64 {
     return -1;
 }
 
-fn insertSlice(
+fn replaceChildItems(
     comptime T: type,
     gpa: Allocator,
     obj: *T,
@@ -492,7 +514,7 @@ fn insertSlice(
     // We've already allocated a slice for `children`. The most simple thing
     // to do is swap out obj's children with the new set, rather than trying
     // to identify the deltas and insert new values only.
-    _ = gpa;
-    //obj.clearDeep(gpa);
+    for (obj.children) |*ch| ch.deinit(gpa);
+    gpa.free(obj.children);
     obj.children = children;
 }
