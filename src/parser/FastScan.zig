@@ -86,7 +86,7 @@ pub fn scan(gpa: Allocator, source: []const u8) !TokenBuffer {
 
     return .{
         .items = try tokens.toOwnedSlice(gpa),
-        .src = source
+        .src = try gpa.dupe(u8, source)
     };
 }
 
@@ -174,3 +174,4 @@ fn word(self: *Self) Token {
 
     return .init(._UNCATEG, self.start, self.cur);
 }
+

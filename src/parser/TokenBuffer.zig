@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
 const Token = @import("Token.zig");
@@ -9,8 +10,60 @@ items: []Token,
 src: []const u8,
 
 
-pub fn deinit(self: *Self, gpa: Allocator) void {
+pub fn deinit(self: Self, gpa: Allocator) void {
     gpa.free(self.items);
+    gpa.free(self.src);
+}
+
+/// Given a second token buffer, extend the first token buffer with the tokens
+/// and source from the second. This function reallocates the first token
+/// buffer's data, rather than creating a new copy of the first and second
+/// combnied (e.g. std.mem.concat)
+pub fn extend(self: *Self, gpa: Allocator, other: Self) !void {
+    const itm_len: usize = self.items.len;
+
+    self.items = try gpa.realloc(self.items, itm_len + other.items.len);
+    @memcpy(self.items[itm_len..itm_len + other.items.len], other.items);
+
+    const src_len: usize = self.src.len;
+
+    // Offset `other` tokens by initial item length
+    for (self.items[itm_len..]) |*tok| {
+        tok.col_beg += src_len;
+        tok.col_end += src_len;
+    }
+
+    self.src = try gpa.realloc(self.src, src_len + other.src.len);
+    @memcpy(@constCast(self.src[src_len..src_len + other.src.len]), other.src);
+}
+
+test "extend" {
+    var init: Self = .{
+        .items = try testing.allocator.dupe(Token, &[_]Token{
+            .{ .kind = ._UNCATEG, .col_beg = 0, .col_end = 5},
+            .{ .kind = ._NEWL, .col_beg = 5, .col_end = 6}
+        }),
+        .src = try testing.allocator.dupe(u8, "Hello\n")
+    };
+    defer init.deinit(testing.allocator);
+
+    const other: Self = .{
+        .items = try testing.allocator.dupe(Token, &[_]Token{
+            .{ .kind = ._UNCATEG, .col_beg = 0, .col_end = 5},
+            .{ .kind = .SEMICOLON, .col_beg = 5, .col_end = 6}
+        }),
+        .src = try testing.allocator.dupe(u8, "World;")
+    };
+    defer other.deinit(testing.allocator);
+
+    try init.extend(testing.allocator, other);
+
+    try testing.expectEqualStrings("Hello\nWorld;", init.src);
+
+    const new_str = try init.asString(testing.allocator);
+    defer testing.allocator.free(new_str);
+
+    try testing.expectEqualStrings("Hello\nWorld;", new_str);
 }
 
 pub fn split(self: *Self, gpa: Allocator) ![]Self {
