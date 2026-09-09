@@ -20,7 +20,7 @@ pub const Iterator = struct {
     };
 
     table: *Self,
-    view: c.ArrowArrayView,
+    view: ?c.ArrowArrayView,
     batch: usize,
     col_i: ?usize,
     row_i: usize,
@@ -33,7 +33,7 @@ pub const Iterator = struct {
         const n_batches: usize = table.countBatches();
 
         if (n_batches <= init_batch) {
-            return error.InvalidIterator;
+            return emptyIter(table);
         }
 
         const view = table.asArrayView(init_batch) catch {
@@ -65,7 +65,7 @@ pub const Iterator = struct {
 
         const res: Slot = .{
             .meta = &self.table.metadata.?[self.col_i.?],
-            .view = self.view.children[self.col_i.?],
+            .view = self.view.?.children[self.col_i.?],
             .col = self.col_i.?,
             .row = self.row_i
         };
@@ -110,6 +110,22 @@ pub const Iterator = struct {
     fn nextRowWise(self: *@This()) void {
         _ = self;
         @panic("Not implemented.\n");
+    }
+
+    /// Return a struct representing an empty iterator ove a TableBuffer.
+    /// Defaults to colwise Direction, but this doesn't really matter as
+    /// the first call to next() should return null.
+    fn emptyIter(table: *Self) @This() {
+        return .{
+            .table = table,
+            .view = null,
+            .batch = 0,
+            .col_i = null,
+            .row_i = 0,
+            .adv = .colwise,
+            .n_batches = 0,
+            .n_rows = 0
+        };
     }
 };
 
