@@ -398,7 +398,9 @@ fn execStatementPrint(
 
     // Diagnostics
     var stderr: Io.File.Writer = Io.File.stderr().writer(io, &outbuf);
-    try stderr.interface.print("{f}\n", .{ state.conn.pmon });
+    try stderr.interface.print("{d} rows | {f}\n", .{
+        state.conn.last_result.countRows(),
+        state.conn.pmon });
     try stderr.interface.flush();
 }
 

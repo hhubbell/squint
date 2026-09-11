@@ -133,8 +133,6 @@ pub fn execute(
 
     // TODO move this to a new TableStreamBuffer interface
     self.last_result.metadata = try adbc.calcColumnMetadata(io, gpa, &self.last_result.buffer);
-    self.pmon.rows = self.last_result.countRows();
-
     self.pmon.proc = self.pmon.lap(io);
 }
 

@@ -32,7 +32,6 @@ pub const PerfData = struct {
     }
 
     pub fn reset(self: *Self, io: Io) void {
-        self.rows = 0;
         self.exec = 0;
         self.load = 0;
         self.proc = 0;
@@ -49,9 +48,8 @@ pub const PerfData = struct {
         var rend: [5]u8 = undefined;
 
         try writer.print(
-            "{d} rows | exec: {s} load: {s} proc: {s} rend: {s}",
+            "exec: {s} load: {s} proc: {s} rend: {s}",
             .{ 
-                self.rows,
                 date.fmt.toDisplayTime(self.exec, &exec),
                 date.fmt.toDisplayTime(self.load, &load),
                 date.fmt.toDisplayTime(self.proc, &proc),
