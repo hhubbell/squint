@@ -137,7 +137,7 @@ fn refreshCatalogList(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
 }
 
 fn refreshCatalogIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
-    const opt = try adbc.getOption(gpa, &conn.conn,
+    const opt = try adbc.getConnectionOption(gpa, &conn.conn,
         c.ADBC_CONNECTION_OPTION_CURRENT_CATALOG,
         conn.errPtr()
     ) orelse return;
@@ -170,7 +170,7 @@ fn refreshSchemaIndex(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
     if (self.current_database < 0) return;
     const cat_i: usize = @intCast(self.current_database);
 
-    const opt = try adbc.getOption(gpa, &conn.conn,
+    const opt = try adbc.getConnectionOption(gpa, &conn.conn,
         c.ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA,
         conn.errPtr()
     ) orelse return;
@@ -207,8 +207,7 @@ fn refreshTables(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
 
 /// Refresh the current connection cache
 pub fn refresh(self: *Self, gpa: Allocator, conn: *ConnectionIo) !void {
-    // TODO. Should I just memoize this rather than checking each time?
-    const driver = try adbc.getInfo(gpa, &conn.conn,
+    const driver = try adbc.getConnectionInfo(gpa, &conn.conn,
         c.ADBC_INFO_DRIVER_NAME,
         conn.errPtr()
     ) orelse return error.AdbcDriverError;

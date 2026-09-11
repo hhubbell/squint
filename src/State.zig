@@ -21,8 +21,10 @@ const posix = std.posix;
 const Mode = enum { interactive, quit };
 
 const StartupParams = struct {
-    config: ?adbc.AdbcConfig,
-    mesg: ?*mesg.MessageBuffer
+    mesg: ?*mesg.MessageBuffer,
+    profile: ?[]const u8,
+    driver: ?[]const u8,
+    uri: ?[]const u8
 };
 
 const Self = @This();
@@ -107,9 +109,17 @@ pub fn init(
     var buffer: [4096]u8 = undefined;
     var stderr: Io.File.Writer = Io.File.stderr().writer(io, &buffer);
 
+    const cn_drv = try conn.getDriver(gpa);
+    defer if (cn_drv) |x| gpa.free(x);
+
+    const cn_uri = try conn.getUri(gpa);
+    defer if (cn_uri) |x| gpa.free(x);
+
     try state.startupMessage(&stderr.interface, .{
-        .config = cfg,
-        .mesg = msg
+        .mesg = msg,
+        .profile = cfg.profile,
+        .driver = cn_drv,
+        .uri = cn_uri
     });
 
     // If we encountered a fatal error during startup, just abort from here
@@ -131,19 +141,19 @@ fn startupMessage(self: Self, writer: *Io.Writer, data: StartupParams) !void {
         ++ "Type \".help\" for dotcommands. "
         ++ "Type \".exit\" or ^D to quit.\n", .{version});
 
-    if (data.config) |x| {
-        if (x.driver) |d| {
-            try writer.print("Driver \"{s}\"", .{d});
-
-            if (x.uri) |u| {
-                try writer.print(" | Uri \"{s}\"", .{u});
-            }
-
-            try writer.print("\n", .{});
-        } else {
-            try writer.print("Profile \"{s}\"\n", .{x.profile.?});
-        }
+    if (data.profile) |x| {
+        try writer.print("Profile \"{s}\"\n", .{x});
     }
+
+    if (data.driver) |x| {
+        try writer.print("Driver \"{s}\"", .{x});
+    }
+
+    if (data.uri) |x| {
+        try writer.print(" | Uri \"{s}\"", .{x});
+    }
+
+    try writer.writeByte('\n');
 
     try writer.print("Pager \"{s}\"\n", .{@tagName(self.page)});
 

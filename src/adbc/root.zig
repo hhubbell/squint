@@ -97,7 +97,7 @@ pub fn executeWithCancel(
 
 }
 
-pub fn getInfo(
+pub fn getConnectionInfo(
     gpa: Allocator,
     conn: *c.AdbcConnection,
     opt: u32,
@@ -151,7 +151,7 @@ pub fn getInfo(
     return null;
 }
 
-pub fn getOption(
+pub fn getConnectionOption(
     gpa: Allocator,
     conn: *c.AdbcConnection,
     opt: [*c]const u8,
@@ -182,6 +182,38 @@ pub fn getOption(
 
     // NOTE: opt_buf is a null-terminated char buffer, so take the
     // entire buffer, minus the null terminator
+    return try gpa.dupe(u8, opt_buf[0..opt_len - 1]);
+}
+
+pub fn getDatabaseOption(
+    gpa: Allocator,
+    db: *c.AdbcDatabase,
+    opt: [*c]const u8,
+    errs: *c.AdbcError
+) !?[]const u8 {
+    var opt_len: usize = 0;
+
+    err.checkAdbc(c.AdbcDatabaseGetOption(db,
+        opt,
+        null,
+        &opt_len,
+        errs
+    )) catch return null;
+
+    if (opt_len == 0) {
+        return null;
+    }
+
+    var opt_buf: []u8 = try gpa.alloc(u8, opt_len);
+    defer gpa.free(opt_buf);
+
+    err.checkAdbc(c.AdbcDatabaseGetOption(db,
+        opt,
+        opt_buf.ptr,
+        &opt_len,
+        errs
+    )) catch return null;
+
     return try gpa.dupe(u8, opt_buf[0..opt_len - 1]);
 }
 

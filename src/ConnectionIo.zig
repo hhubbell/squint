@@ -182,3 +182,19 @@ pub fn lastErrMsg(self: *Self) []const u8 {
     }
 }
 
+/// Get the connection driver. It shouldn't be possible to establish a
+/// connection without a driver, so we basically unwrap this and crash
+/// if it fails.
+pub fn getDriver(self: *Self, gpa: Allocator) !?[]const u8 {
+    return try adbc.getConnectionInfo(gpa, &self.conn,
+        c.ADBC_INFO_DRIVER_NAME,
+        self.errPtr()
+    );
+}
+
+pub fn getUri(self: *Self, gpa: Allocator) !?[]const u8 {
+    return try adbc.getDatabaseOption(gpa, &self.db,
+        "uri",
+        self.errPtr()
+    );
+}
