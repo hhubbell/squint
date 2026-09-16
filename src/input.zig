@@ -53,7 +53,7 @@ const DotCommandMap = std.StaticStringMap(DotCommand).initComptime(.{
         .help = "Print logged error messages",
         .call = dcErrors }},
     .{ ".edit", DotCommand {
-        .help = "Edit the last statement using env EDITOR",
+        .help = "Edit a file using env EDITOR. If none provided, edit the last statement",
         .call = dcEdit }},
     .{ ".exit", DotCommand {
         .help = "Exit the program",
@@ -125,43 +125,40 @@ fn dcCatalogs(args: *TokenIter, opts: DotCommandOptions) !void {
 }
 
 fn dcEdit(args: *TokenIter, opts: DotCommandOptions) !void {
-    const input: []const u8 = args.rest();
-
     if (opts.state.edit == null) {
         opts.msg.addErr("Editor not available", .{});  
         return error.DotCommandError;
     }
 
-    var file: Io.File = Dir.createFileAbsolute(opts.io, editor.tmp_buffer, .{}) catch |e| {
-        opts.msg.addErr("File IO error: {s}", .{@errorName(e)});  
-        return error.DotCommandError;
-    };
-    defer file.close(opts.io);
+    const input: ?[]const u8 = args.next();
+    const edited: []const u8 = input orelse editor.tmp_buffer;
 
-    var buffer: [4096]u8 = undefined;
-    var writer: Io.File.Writer = file.writer(opts.io, &buffer);
-
-    if (input.len > 0) {
-        writer.interface.writeAll(input) catch |e| {
-            opts.msg.addErr("Could not write input {s}", .{@errorName(e)});
+    // If no input file given, write the last statement to a file in /tmp/
+    if (input == null) {
+        var file: Io.File = Dir.createFileAbsolute(opts.io, editor.tmp_buffer, .{}) catch |e| {
+            opts.msg.addErr("File IO error: {s}", .{@errorName(e)});  
             return error.DotCommandError;
         };
-    } else {
+        defer file.close(opts.io);
+
+        var buffer: [4096]u8 = undefined;
+        var writer: Io.File.Writer = file.writer(opts.io, &buffer);
+
         writer.interface.writeAll(opts.state.conn.last_statement orelse "") catch |e| {
             opts.msg.addErr("Could not write last statement {s}", .{@errorName(e)});
             return error.DotCommandError;
         };
+
+        try writer.interface.flush();
     }
 
-    try writer.interface.flush();
-
-    try editor.edit(opts.io, opts.state.edit.?, editor.tmp_buffer);
+    try editor.edit(opts.io, opts.state.edit.?, edited);
 
     const ed_buf: [:0]const u8 = try readFile(
         opts.io,
         opts.gpa,
         opts.msg,
-        editor.tmp_buffer);
+        edited);
     defer opts.gpa.free(ed_buf);
 
     // Memorialize the input
